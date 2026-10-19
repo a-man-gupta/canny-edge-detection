@@ -1,0 +1,5 @@
+{
+  "team-global": ["/absolute/path/to/canny_global"],
+  "team-tiled": ["/absolute/path/to/canny_tiled"],
+  "team-fused": ["/absolute/path/to/canny_fused"]
+}
