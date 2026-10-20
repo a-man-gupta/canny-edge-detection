@@ -15,9 +15,11 @@ import cv2
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
-STAGES = ['h2d_ms', 'blur_ms', 'sobel_ms', 'nms_ms', 'threshold_ms', 'hysteresis_ms', 'canny_ms', 'fused_ms', 'd2h_ms']
+# Stage columns the plotter can stack. A run that omits a stage simply has no bar for it.
+STAGES = ['blur_ms', 'sobel_ms', 'nms_ms', 'threshold_ms', 'hysteresis_ms', 'canny_ms', 'fused_ms']
 
 
+# Pixel agreement of two 0/255 edge maps.
 def metrics(actual, expected):
     a, b = actual != 0, expected != 0
     tp = int(np.count_nonzero(a & b))
@@ -30,6 +32,7 @@ def metrics(actual, expected):
             'edge_density': float(np.mean(a)), 'tp': tp, 'fp': fp, 'fn': fn}
 
 
+# One JSON object: exactly `iterations` finite samples, plus a binary edge map.
 def validate(payload, iterations, shape, output):
     samples = payload['samples']
     if len(samples) != iterations:
@@ -51,6 +54,7 @@ def validate(payload, iterations, shape, output):
         raise ValueError('Output must be a binary 0/255 edge map')
 
 
+# OpenCV CPU baseline: Gaussian blur, then Canny. OpenCL is forced off.
 def opencv_cpu(image, threads, a):
     cv2.setNumThreads(threads)
     cv2.ocl.setUseOpenCL(False)
@@ -80,6 +84,7 @@ def write_csv(path, rows):
         writer.writerows(rows)
 
 
+# Load the manifest, run the selected CPU implementations, write CSV timings.
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--manifest', type=Path, default=ROOT/'benchmark_data/manifest.json')
@@ -90,7 +95,7 @@ def main():
     p.add_argument('--high', type=float, default=100)
     p.add_argument('--sigma', type=float, default=1.4)
     p.add_argument('--threads', type=int, default=0, help='OpenCV multi baseline: 0 = detected CPU count; record actual threads')
-    p.add_argument('--implementations', nargs='+', default=['scalar', 'opencv-1', 'opencv-multi', 'opencv-cuda'])
+    p.add_argument('--implementations', nargs='+', default=['scalar', 'opencv-1', 'opencv-multi'])
     p.add_argument('--adapters', type=Path, help='JSON mapping names to executable argument arrays')
     p.add_argument('--case', nargs='+', help='Run only these exact case names')
     p.add_argument('--timeout', type=float, default=7200, help='Seconds per external executable/case')
@@ -102,11 +107,12 @@ def main():
         p.error('--min-f1 must be in [0,1]')
     if a.min_f1 is not None and 'scalar' not in a.implementations:
         p.error('--min-f1 requires scalar in --implementations')
-    adapters = {'scalar': [str(ROOT/'build/canny_scalar')], 'opencv-cuda': [str(ROOT/'build/canny_opencv_cuda')]}
+    # scalar is the C++ executable. opencv-1 and opencv-multi run in this process.
+    adapters = {'scalar': [str(ROOT/'build/canny_scalar')]}
     if a.adapters:
         custom = json.loads(a.adapters.read_text())
         for name, cmd in custom.items():
-            if name in ['scalar', 'opencv-1', 'opencv-multi', 'opencv-cuda']:
+            if name in ['scalar', 'opencv-1', 'opencv-multi']:
                 p.error(f'Cannot override builtin {name}')
             if not isinstance(cmd, list) or not cmd or not all(isinstance(v,str) for v in cmd):
                 p.error(f'Adapter {name} must be a nonempty argument array')
@@ -143,7 +149,7 @@ def main():
                 'git_commit': git('rev-parse','HEAD'), 'git_status': git('status','--porcelain'),
                 'git_diff': git('diff','HEAD'), 'manifest': manifest, 'adapters': adapters,
                 'cpu_affinity': sorted(os.sched_getaffinity(0)) if hasattr(os,'sched_getaffinity') else None,
-                'environment': {k: os.environ.get(k) for k in ['CUDA_VISIBLE_DEVICES','OMP_NUM_THREADS','OPENBLAS_NUM_THREADS']}}
+                'environment': {k: os.environ.get(k) for k in ['OMP_NUM_THREADS','OPENBLAS_NUM_THREADS']}}
     for name, cmd in adapters.items():
         exe = Path(cmd[0])
         if exe.is_file():
@@ -170,7 +176,7 @@ def main():
             print(f'{case["name"]}: {name}', flush=True)
             status = {'case': case['name'], 'implementation': name}
             try:
-                if name.startswith('opencv-') and name != 'opencv-cuda':
+                if name.startswith('opencv-'):
                     threads = 1 if name == 'opencv-1' else (a.threads or (os.cpu_count() or 1))
                     payload, output = opencv_cpu(image, threads, a)
                     if not cv2.imwrite(str(output_path),output):
@@ -178,7 +184,7 @@ def main():
                 else:
                     cmd = adapters[name]
                     if not Path(cmd[0]).is_file():
-                        if name not in ['scalar','opencv-cuda']:
+                        if name not in ['scalar']:
                             raise FileNotFoundError(f'Configured adapter missing: {cmd[0]}')
                         status.update(status='skipped', reason=f'Executable not built: {cmd[0]}')
                         statuses.append(status)

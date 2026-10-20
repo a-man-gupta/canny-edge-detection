@@ -24,14 +24,13 @@ def read(path):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('results', type=Path)
-    p.add_argument('--traffic-model', type=Path, help='Explicit implementation/stage logical-byte model, see example')
-    p.add_argument('--peak-gbs', type=float, help='User-verified nominal GPU bandwidth, decimal GB/s; only applied to models marked gpu')
+    p.add_argument('--traffic-model', type=Path, help='Optional JSON of logical bytes per pixel for a measured stage')
     a = p.parse_args()
-    if a.peak_gbs is not None and (not np.isfinite(a.peak_gbs) or a.peak_gbs<=0):
-        p.error('--peak-gbs must be positive and finite')
     summary, raw = read(a.results/'summary.csv'), read(a.results/'raw.csv')
     out = a.results/'plots';out.mkdir(exist_ok=True)
     implementations = list(dict.fromkeys(r['implementation'] for r in summary))
+
+    # Throughput against image size, from the median latency of the resolution sweep.
     for basis in ['compute','e2e']:
         fig, ax = plt.subplots(figsize=(9,5))
         for name in implementations:
@@ -41,6 +40,8 @@ def main():
         ax.set(xlabel='Image size (MP)',ylabel='Throughput (MP/s)',title=f'{basis}: throughput from median latency')
         if ax.lines: ax.legend()
         ax.grid(alpha=.2);fig.tight_layout();fig.savefig(out/f'throughput_{basis}.png',dpi=160);plt.close(fig)
+
+    # One stage chart and one latency chart per case.
     for case in dict.fromkeys(r['case'] for r in summary):
         rows = [r for r in summary if r['case']==case]
         names = [r['implementation'] for r in rows]
@@ -63,6 +64,8 @@ def main():
             ax.errorbar(x+offset,med,yerr=[np.zeros(len(rows)),p95-med],fmt='none',ecolor='black',capsize=3)
         ax.set(xticks=x,xticklabels=names,ylabel='Latency (ms)',title=f'{case}: median with upper whisker at p95')
         ax.tick_params(axis='x',rotation=20);ax.legend();fig.tight_layout();fig.savefig(out/f'{case}_latency.png',dpi=160);plt.close(fig)
+
+    # Optional logical-byte table. Unused unless the caller passes a model file.
     bandwidth=[]
     if a.traffic_model:
         model=json.loads(a.traffic_model.read_text())
@@ -77,18 +80,11 @@ def main():
                 if not np.isfinite(bpp) or bpp<=0 or not traffic.get('rationale'):
                     raise ValueError('Traffic requires positive bytes_per_pixel and rationale')
                 gbs=bpp*int(row['width'])*int(row['height'])/float(latency)/1e6
+                # Logical bytes over measured time. Not a hardware-counter reading.
                 bw={'case':row['case'],'implementation':row['implementation'],'stage':stage,
-                    'logical_bytes_per_pixel':bpp,'effective_logical_gbs':gbs,'rationale':traffic['rationale'],
-                    'nominal_peak_gbs':a.peak_gbs if spec.get('device')=='gpu' else '',
-                    'pct_nominal_peak':100*gbs/a.peak_gbs if a.peak_gbs and spec.get('device')=='gpu' else ''}
+                    'logical_bytes_per_pixel':bpp,'effective_logical_gbs':gbs,'rationale':traffic['rationale']}
                 bandwidth.append(bw)
         write_csv(out/'bandwidth_model.csv',bandwidth)
-        gpu_rows=[r for r in bandwidth if r['pct_nominal_peak']!='']
-        if gpu_rows:
-            fig,ax=plt.subplots(figsize=(10,max(4,len(gpu_rows)*.3)))
-            ax.barh([f'{r["case"]}/{r["implementation"]}/{r["stage"]}' for r in gpu_rows],[r['pct_nominal_peak'] for r in gpu_rows])
-            ax.set(xlabel='Effective logical bandwidth / nominal peak (%)',title='Traffic-model estimate; not measured DRAM utilization')
-            fig.tight_layout();fig.savefig(out/'bandwidth_model.png',dpi=160);plt.close(fig)
     accuracy=read(a.results/'accuracy.csv')
     # Portable HTML table for review/presentation; image files remain standalone.
     import html
@@ -102,10 +98,10 @@ def main():
     for path in sorted(out.glob('*.png')):
         report+=f'<p><img style="max-width:100%" src="{html.escape(path.name)}" alt="{html.escape(path.stem)}"></p>'
     (out/'index.html').write_text(report)
-    (out/'plot_metadata.json').write_text(json.dumps({'peak_gbs':a.peak_gbs,'traffic_model':str(a.traffic_model) if a.traffic_model else None},indent=2)+'\n')
+    (out/'plot_metadata.json').write_text(json.dumps({'traffic_model':str(a.traffic_model) if a.traffic_model else None},indent=2)+'\n')
     print(f'Plots and accuracy table: {out}/index.html')
-    if not bandwidth:
-        print('Bandwidth plot omitted: no applicable measured-stage traffic model supplied.')
+    if bandwidth:
+        print(f'Logical traffic table: {out}/bandwidth_model.csv')
 
 
 if __name__ == '__main__':

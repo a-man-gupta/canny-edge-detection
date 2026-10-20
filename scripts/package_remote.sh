@@ -8,5 +8,5 @@ if [[ -e "$ARCHIVE" ]]; then printf 'Archive already exists: %s\n' "$ARCHIVE" >&
 mkdir -p -- "$(dirname -- "$ARCHIVE")"
 tar --exclude='__pycache__' --exclude='*.pyc' -czf "$ARCHIVE" \
   CMakeLists.txt requirements-bench.txt collect_hw_info.sh src benchmarks scripts \
-  README.md agent.md log.md AGENTS.md .gitignore
+  README.md .gitignore
 printf 'Remote source kit: %s\n' "$ARCHIVE"

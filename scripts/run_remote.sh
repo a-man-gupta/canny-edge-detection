@@ -19,7 +19,9 @@ done
 if [[ -e "$OUT" ]]; then printf 'Output already exists: %s\n' "$OUT" >&2; exit 2; fi
 mkdir -p "$OUT"
 # Preserve the actual harness sources, including uncommitted additions.
-tar --exclude='__pycache__' --exclude='*.pyc' -czf "$OUT/source.tar.gz"   CMakeLists.txt requirements-bench.txt collect_hw_info.sh src benchmarks scripts   README.md agent.md log.md AGENTS.md
+tar --exclude='__pycache__' --exclude='*.pyc' -czf "$OUT/source.tar.gz" \
+  CMakeLists.txt requirements-bench.txt collect_hw_info.sh src benchmarks scripts \
+  README.md .gitignore
 PYTHON="$PY" ./collect_hw_info.sh "$OUT/hardware_before.txt"
 "$PY" benchmarks/generate_dataset.py --output "$DATA" "${GEN[@]}"
 if [[ -d build ]]; then
