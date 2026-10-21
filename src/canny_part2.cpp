@@ -234,7 +234,5 @@ int main(int argc, char** argv) try {
         std::cout<<"}";
     }
     std::cout<<"]}\n";
-    // Fallback count is not part of the JSON timing object.
-    std::cerr << "sobel_fallback_lanes " << sobel_fallback_lanes() << "\n";
     return 0;
 } catch(const std::exception& e) {std::cerr<<e.what()<<"\n";return 1;}

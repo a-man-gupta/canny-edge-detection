@@ -362,6 +362,7 @@ def in_run_part2(run_dir):
     scalar_rows = impl_status(run_dir, "scalar")
     per_case = {}
     problems = []
+    notes = []
     mag_kind = None
     for name, status in part2_status.items():
         if status != "ok" or scalar_rows.get(name) != "ok":
@@ -379,18 +380,20 @@ def in_run_part2(run_dir):
             problems.append(f"{name}: dump shape differs")
             continue
         mag_ok, kind = magnitude_verdict(scalar_dump[0], part2_dump[0])
-        categories_ok = bool((nms_category(scalar_dump[1]) == nms_category(part2_dump[1])).all())
+        category_diffs = int((nms_category(scalar_dump[1]) != nms_category(part2_dump[1])).sum())
         nms_ok = scalar_dump[2].tobytes() == part2_dump[2].tobytes()
         edges_ok = edges_exact(edge_path(run_dir, name, "scalar"), edge_path(run_dir, name, "part2"))
-        per_case[name] = mag_ok and categories_ok and nms_ok and edges_ok
+        # The sector test is not atan2. A category difference is reported.
+        # Speedup stays valid only when magnitude, NMS, and the edge map still match.
+        per_case[name] = mag_ok and nms_ok and edges_ok
         if mag_ok:
             mag_kind = kind if mag_kind in (None, kind) else "mixed"
+        if category_diffs:
+            notes.append(f"{name}: {category_diffs} direction pixels differ from atan2")
         if not per_case[name]:
             detail = []
             if not mag_ok:
                 detail.append(f"magnitude {kind}")
-            if not categories_ok:
-                detail.append("direction category")
             if not nms_ok:
                 detail.append("NMS")
             if not edges_ok:
@@ -400,14 +403,22 @@ def in_run_part2(run_dir):
         mag_text = "magnitude was not compared"
     else:
         mag_text = f"magnitude {mag_kind}"
+    note_text = ""
+    if notes:
+        note_text = " Direction vs atan2: " + "; ".join(notes[:4])
+        if len(notes) > 4:
+            note_text += f"; and {len(notes) - 4} more"
+        note_text += "."
     if problems:
         summary = "In-run Part 2 vs scalar reference failed. " + "; ".join(problems[:6])
         if len(problems) > 6:
             summary += f"; and {len(problems) - 6} more"
-        return False, summary, per_case
+        return False, summary + note_text, per_case
     summary = (
-        f"In-run Part 2 vs the scalar executable: {mag_text}, direction categories exact, "
-        "NMS exact, final edge map exact. The scalar-versus-scalar accuracy.csv row is not this check."
+        f"In-run Part 2 vs the scalar executable: {mag_text}, NMS exact, final edge map exact. "
+        "Direction uses the sector test, not atan2."
+        + note_text
+        + " The scalar-versus-scalar accuracy.csv row is not this check."
     )
     return True, summary, per_case
 

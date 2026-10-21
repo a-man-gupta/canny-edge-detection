@@ -4,39 +4,16 @@
 #include <cmath>
 #include <cstddef>
 #include <immintrin.h>
-#include <limits>
 
-// tan(22.5°) = sqrt(2) - 1, rounded to float32 (0x3ed413cd).
+// tan(22.5°) = sqrt(2) - 1. tan(67.5°) = 1 / tan(22.5°).
+// OpenCV's Canny uses this sector test (its fixed-point TG22) and never calls atan2.
+// One rule for every pixel, including zeros and exact boundaries:
+//   |gy| < |gx| * tan(22.5°)            -> horizontal, store 0
+//   |gx| < |gy| * tan(22.5°)            -> vertical,   store 90
+//   otherwise, gx and gy the same sign  -> 45 degrees
+//   otherwise                           -> 135 degrees
+// Equality is the diagonal. This is not a promise that the bin matches atan2.
 static const float kTan22 = static_cast<float>(std::sqrt(2.0) - 1.0);
-// Relative gap | |gy| - |gx|*tan(22.5) | / (|gx|+|gy|), and the same gap
-// against the 67.5° boundary. A sweep of 2e6 gradients in [-2040, 2040],
-// 2e5 wider finite pairs, and both sides of 22.5/67.5/112.5/157.5 found
-// every ratio-versus-atan2 disagreement inside 6.8e-8. 1e-4 is about
-// 1500 times that gap (a few thousandths of a degree). Closer lanes use
-// the scalar atan2 expression from canny_scalar.cpp.
-static constexpr float kBoundaryEps = 1.0e-4f;
-// Below this, |gx|*tan(22.5) can underflow and the ratio test is not trustworthy.
-static constexpr float kTinyScale = 1.0e-20f;
-
-static unsigned long long g_fallback_lanes = 0;
-
-unsigned long long sobel_fallback_lanes() { return g_fallback_lanes; }
-void sobel_reset_fallback_lanes() { g_fallback_lanes = 0; }
-
-// Part 3 branches, copied as a comment so the stored values stay inside them:
-//   d < 22.5 or d >= 157.5  -> horizontal neighbors, store 0
-//   d < 67.5                -> 45-degree neighbors, store 45
-//   d < 112.5               -> vertical neighbors, store 90
-//   else                    -> 135-degree neighbors, store 135
-static int category_from_degrees(float d) {
-    if (d < 22.5f || d >= 157.5f)
-        return 0;
-    if (d < 67.5f)
-        return 1;
-    if (d < 112.5f)
-        return 2;
-    return 3;
-}
 
 static float representative(int category) {
     if (category == 1)
@@ -48,60 +25,18 @@ static float representative(int category) {
     return 0.f;
 }
 
-// Original angle expression from canny_scalar.cpp, then the Part 3 bin.
-// One call is one fallback lane.
-static float angle_from_atan2(float gx, float gy) {
-    ++g_fallback_lanes;
-    float degrees = std::atan2(gy, gx) * 180.0f / 3.14159265358979323846f;
-    float folded = degrees < 0 ? degrees + 180 : degrees;
-    return representative(category_from_degrees(folded));
-}
-
-// Fast path. Returns -1 when the lane is too close to a bin boundary,
-// too small to multiply by tan(22.5), or non-finite. The caller then
-// uses angle_from_atan2.
-//
-// The 22.5° test is not symmetric. +22.5° is the 45° bin (d < 22.5 is
-// false) and -22.5°, which folds to 157.5°, is horizontal (d >= 157.5).
-// Same-sign gradients use a strict < at 22.5° and <= at 67.5°.
-// Opposite-sign gradients use <= at 22.5° and a strict < at 67.5°.
-// All four signed-zero pairs are horizontal: atan2(±0, ±0) folds to
-// 0, -0, or 180, and each of those takes the horizontal Part 3 branch.
-static int fast_category(float gx, float gy) {
+static int direction_category(float gx, float gy) {
     float ax = std::fabs(gx);
     float ay = std::fabs(gy);
-    if (ax == 0.f && ay == 0.f)
+    if (ay < ax * kTan22)
         return 0;
-    float ax_t = ax * kTan22;
-    float ay_t = ay * kTan22;
-    float scale = ax + ay;
-    if (!(scale >= kTinyScale) || !std::isfinite(ax_t) || !std::isfinite(ay_t))
-        return -1;
-    float sep_h = std::fabs(ay - ax_t);
-    float sep_v = std::fabs(ax - ay_t);
-    float sep = sep_h < sep_v ? sep_h : sep_v;
-    if (sep <= kBoundaryEps * scale)
-        return -1;
-    bool same = std::signbit(gx) == std::signbit(gy);
-    if (same) {
-        if (ay < ax_t)
-            return 0;
-        if (ax <= ay_t)
-            return 2;
-        return 1;
-    }
-    if (ay <= ax_t)
-        return 0;
-    if (ax < ay_t)
+    if (ax < ay * kTan22)
         return 2;
-    return 3;
+    return std::signbit(gx) == std::signbit(gy) ? 1 : 3;
 }
 
 float sobel_classify_angle(float gx, float gy) {
-    int category = fast_category(gx, gy);
-    if (category < 0)
-        return angle_from_atan2(gx, gy);
-    return representative(category);
+    return representative(direction_category(gx, gy));
 }
 
 static inline __m256 abs_ps(__m256 v) {
@@ -135,57 +70,23 @@ void sobel_kernel(int w, int h,
         angle[i] = sobel_classify_angle(gx, gy);
     };
 
-    // One group of 8 lanes. Called only after that group's magnitude is stored.
-    // Bins: absolute gradients against tan(22.5), then the sign selects the
-    // inclusive side of each boundary. Ambiguous lanes are overwritten one at a time.
+    // One group of 8 lanes. Same comparisons as direction_category, no atan2.
     auto classify_store = [&](__m256 gx, __m256 gy, float* dst) {
-        const __m256 zero = _mm256_setzero_ps();
+        const __m256 tan22 = _mm256_set1_ps(kTan22);
         const __m256 ax = abs_ps(gx);
         const __m256 ay = abs_ps(gy);
-        const __m256 ax_t = _mm256_mul_ps(ax, _mm256_set1_ps(kTan22));
-        const __m256 ay_t = _mm256_mul_ps(ay, _mm256_set1_ps(kTan22));
-        const __m256 zero_grad = _mm256_and_ps(
-            _mm256_cmp_ps(ax, zero, _CMP_EQ_OQ),
-            _mm256_cmp_ps(ay, zero, _CMP_EQ_OQ));
+        const __m256 ax_t = _mm256_mul_ps(ax, tan22);
+        const __m256 ay_t = _mm256_mul_ps(ay, tan22);
+        const __m256 horiz = _mm256_cmp_ps(ay, ax_t, _CMP_LT_OQ);
+        const __m256 vert = _mm256_cmp_ps(ax, ay_t, _CMP_LT_OQ);
         const __m256 sign_bit = _mm256_set1_ps(-0.0f);
         const __m256 same = _mm256_castsi256_ps(_mm256_cmpeq_epi32(
             _mm256_castps_si256(_mm256_and_ps(gx, sign_bit)),
             _mm256_castps_si256(_mm256_and_ps(gy, sign_bit))));
-        const __m256 same_horiz = _mm256_cmp_ps(ay, ax_t, _CMP_LT_OQ);
-        const __m256 same_vert = _mm256_cmp_ps(ax, ay_t, _CMP_LE_OQ);
-        const __m256 opp_horiz = _mm256_cmp_ps(ay, ax_t, _CMP_LE_OQ);
-        const __m256 opp_vert = _mm256_cmp_ps(ax, ay_t, _CMP_LT_OQ);
-        const __m256 horiz = _mm256_blendv_ps(opp_horiz, same_horiz, same);
-        const __m256 vert = _mm256_blendv_ps(opp_vert, same_vert, same);
         __m256 rep = _mm256_blendv_ps(_mm256_set1_ps(135.f), _mm256_set1_ps(45.f), same);
         rep = _mm256_blendv_ps(rep, _mm256_set1_ps(90.f), vert);
         rep = _mm256_blendv_ps(rep, _mm256_set1_ps(0.f), horiz);
-        rep = _mm256_blendv_ps(rep, _mm256_set1_ps(0.f), zero_grad);
-
-        const __m256 scale = _mm256_add_ps(ax, ay);
-        const __m256 sep = _mm256_min_ps(abs_ps(_mm256_sub_ps(ay, ax_t)),
-                                         abs_ps(_mm256_sub_ps(ax, ay_t)));
-        const __m256 near = _mm256_cmp_ps(sep, _mm256_mul_ps(scale, _mm256_set1_ps(kBoundaryEps)), _CMP_LE_OQ);
-        const __m256 tiny = _mm256_cmp_ps(scale, _mm256_set1_ps(kTinyScale), _CMP_LT_OQ);
-        const __m256 finite = _mm256_and_ps(
-            _mm256_cmp_ps(abs_ps(ax_t), _mm256_set1_ps(std::numeric_limits<float>::infinity()), _CMP_LT_OQ),
-            _mm256_cmp_ps(abs_ps(ay_t), _mm256_set1_ps(std::numeric_limits<float>::infinity()), _CMP_LT_OQ));
-        const __m256 not_finite = _mm256_andnot_ps(finite, _mm256_castsi256_ps(_mm256_set1_epi32(-1)));
-        __m256 ambiguous = _mm256_or_ps(_mm256_or_ps(near, tiny), not_finite);
-        ambiguous = _mm256_andnot_ps(zero_grad, ambiguous);
-
         _mm256_storeu_ps(dst, rep);
-        // Fallback: only the lanes whose mask bit is set recompute the scalar angle.
-        const int mask = _mm256_movemask_ps(ambiguous);
-        if (mask == 0)
-            return;
-        alignas(32) float gx_l[8], gy_l[8];
-        _mm256_store_ps(gx_l, gx);
-        _mm256_store_ps(gy_l, gy);
-        for (int lane = 0; lane < 8; ++lane) {
-            if (mask & (1 << lane))
-                dst[lane] = angle_from_atan2(gx_l[lane], gy_l[lane]);
-        }
     };
 
     for (int y = 0; y < h; ++y) {
