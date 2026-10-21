@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Next numbered Sobel/NMS benchmark. One command; timing stays in benchmarks/run.py.
+# run-001/baseline.json points at the frozen baseline (run-003). The new run id is
+# one past the highest existing run-NNN, so an existing run is never reused.
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
@@ -12,9 +14,12 @@ fi
 RUN_ID=$("$PY" -c '
 from pathlib import Path
 root = Path("benchmark_results")
-n = 1
-while (root / f"run-{n:03d}").exists():
-    n += 1
+nums = []
+for path in root.iterdir():
+    name = path.name
+    if path.is_dir() and name.startswith("run-") and name[4:].isdigit():
+        nums.append(int(name[4:]))
+n = (max(nums) if nums else 0) + 1
 print(f"run-{n:03d}")
 ')
 OUT="$ROOT/benchmark_results/$RUN_ID"

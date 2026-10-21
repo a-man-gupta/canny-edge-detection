@@ -6,7 +6,7 @@ Comparison view for Part 2 (Sobel) and Part 3 (non-maximum suppression). Timing 
 ./scripts/run_stages.sh
 ```
 
-That command is the matched full-size run. It takes the next free `benchmark_results/run-00N/` directory and reuses the frozen baseline's image cases, warmup, iteration count, and scalar-only settings. run-001 is the procedural full-size scalar sweep `20261020T235216Z-2233567` (resolutions through 7680x4320, warmup 3, 10 iterations, no photograph). The older grace_hopper sweep `20261019T232528Z-1788498` is a different photo, warmup, and iteration count, so it is not this baseline.
+That command is the matched full-size run. It takes the next `benchmark_results/run-00N/` directory after the highest existing run and reuses the frozen baseline's image cases, warmup, iteration count, and scalar-only settings. The default baseline is run-003: procedural images, resolutions 640x480 through 7680x4320, warmup 3, 10 iterations, scalar. `benchmark_results/run-001/baseline.json` points at run-003 and those timing files are read in place. The previous baseline was `benchmark_results/archive/20261020T235216Z-2233567`; that archive is unchanged and is no longer the default. The older grace_hopper sweep `20261019T232528Z-1788498` is a different photo, warmup, and iteration count, so it is not this baseline.
 
 Results stay in `benchmark_results/`. Open only:
 
@@ -14,11 +14,11 @@ Results stay in `benchmark_results/`. Open only:
 - `benchmark_results/run-00N/comparison/nms_time.png`
 - `benchmark_results/run-00N/comparison/results.md`
 
-Those are median milliseconds versus image size, smallest to largest, plus one table of the five stage medians, total time, and Sobel and NMS speedup. Speedup is the run-001 median divided by this run's median. The generic throughput, stage-stack, latency, and HTML plots are not written into `comparison/`.
+Those are median milliseconds versus image size, smallest to largest, plus one table of the five stage medians, total time, and Sobel and NMS speedup. Speedup is the run-003 median divided by this run's median. The generic throughput, stage-stack, latency, and HTML plots are not written into `comparison/`.
 
-`benchmark_results/run-001/` stores a pointer and checksums. The timestamp directory is read in place.
+`benchmark_results/run-001/` stores a pointer and checksums. run-003 is read in place. The previous archive `20261020T235216Z-2233567` stays where it is.
 
-A run is a matched comparison only when the image cases, warmup, iteration count, compiler settings, machine, and thresholds match run-001, and each resolution case has scalar status `ok` with accuracy.csv F1 1 and agreement 100 against the scalar reference. Anything else is marked `not matched` or `failed`. Those cells are not a speedup. A smoke run uses different sizes, so it is not a successful speedup against the 8K baseline:
+A run is a matched comparison only when the image cases, warmup, iteration count, compiler settings, machine, and thresholds match run-003, and each timed scalar edge map is an exact 0/255 match to the run-003 map for the same case (`run/edges/<case>_<scalar index>.pgm`). The in-run `accuracy.csv` scalar row compares the scalar output with itself, so the stage verdict does not use it. A mismatch is `failed` and that case has no Sobel or NMS speedup. A smoke run uses different sizes, so its maps are not compared to the full-size baseline maps. The table says `not compared to baseline edge map`, and the verdict is not a successful speedup:
 
 ```bash
 ./scripts/run_stages.sh --smoke -- --warmup 1 --iterations 2

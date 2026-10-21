@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""Sobel and NMS comparison against the frozen run-001 scalar baseline.
+"""Sobel and NMS comparison against the frozen scalar baseline.
 
-Reads the baseline timestamp directory in place. Writes two line plots and one
-table under the numbered run's comparison/ directory. Does not time anything.
+The pointer is benchmark_results/run-001/baseline.json. It names run-003, which
+is read in place. Writes two line plots and one table under the numbered run's
+comparison/ directory. Does not time anything.
+
+Correctness is the timed scalar edge map versus that baseline edge map. The
+in-run accuracy.csv row that compares scalar with itself is not the verdict.
 """
 import csv
 import hashlib
@@ -15,7 +19,8 @@ ROOT = Path(__file__).resolve().parents[2]
 RESULTS = ROOT / "benchmark_results"
 BASELINE_DIR = RESULTS / "run-001"
 BASELINE_JSON = BASELINE_DIR / "baseline.json"
-TIMESTAMP = "20261020T235216Z-2233567"
+BASELINE_RUN = "run-003"
+PREVIOUS_TIMESTAMP = "20261020T235216Z-2233567"
 CHECK_FILES = (
     "run/summary.csv",
     "run/raw.csv",
@@ -195,18 +200,53 @@ def scalar_status(run_dir):
     return found
 
 
-def scalar_reference_match(run_dir):
-    """True only when accuracy.csv reports an exact scalar-vs-scalar match."""
-    matched = {}
-    for row in read_csv(run_dir / "run" / "accuracy.csv"):
-        if row.get("implementation") != "scalar" or row.get("reference") != "scalar":
-            continue
+def scalar_edge_path(run_dir, case_name):
+    """PGM written for the timed scalar implementation, not the in-run self check."""
+    index = 0
+    metadata_path = run_dir / "run" / "metadata.json"
+    if metadata_path.is_file():
         try:
-            ok = math.isclose(float(row["f1"]), 1.0, abs_tol=1e-9) and math.isclose(float(row["agreement_pct"]), 100.0, abs_tol=1e-6)
-        except (KeyError, TypeError, ValueError):
-            ok = False
-        matched[row.get("case")] = ok
-    return matched
+            parameters = json.loads(metadata_path.read_text()).get("parameters") or {}
+        except (OSError, json.JSONDecodeError, AttributeError):
+            parameters = {}
+        implementations = parameters.get("implementations") or []
+        if isinstance(implementations, list) and "scalar" in implementations:
+            index = implementations.index("scalar")
+    return run_dir / "run" / "edges" / f"{case_name}_{index}.pgm"
+
+
+def edges_exact(baseline_path, current_path):
+    """True only when both files are the same 0/255 edge map."""
+    import cv2
+    import numpy as np
+    bench = str(ROOT / "benchmarks")
+    if bench not in sys.path:
+        sys.path.insert(0, bench)
+    from run import metrics
+    if not baseline_path.is_file() or not current_path.is_file():
+        return False
+    baseline = cv2.imread(str(baseline_path), cv2.IMREAD_GRAYSCALE)
+    current = cv2.imread(str(current_path), cv2.IMREAD_GRAYSCALE)
+    if baseline is None or current is None:
+        return False
+    if baseline.shape != current.shape or baseline.dtype != current.dtype:
+        return False
+    if not np.isin(baseline, [0, 255]).all() or not np.isin(current, [0, 255]).all():
+        return False
+    if not np.array_equal(baseline, current):
+        return False
+    stats = metrics(current, baseline)
+    try:
+        return math.isclose(float(stats["f1"]), 1.0, abs_tol=1e-9) and math.isclose(float(stats["agreement_pct"]), 100.0, abs_tol=1e-6)
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def baseline_edge_match(source, run_dir, case_names):
+    found = {}
+    for name in case_names:
+        found[name] = edges_exact(scalar_edge_path(source, name), scalar_edge_path(run_dir, name))
+    return found
 
 
 def resolution_rows(summary):
@@ -249,17 +289,20 @@ def build_rows(baseline_rows, current_rows, statuses, reference_ok, settings_mat
         status = statuses.get(name)
         agreed = reference_ok.get(name, False)
         comparable = status == "ok" and agreed
-        if not comparable:
+        if settings_match and not comparable:
             any_failed = True
         base = baseline_by_name.get(name)
         sobel = speedup_value(base, row, "sobel_ms_median")
         nms = speedup_value(base, row, "nms_ms_median")
         if not settings_match:
             sobel_cell, nms_cell = "not matched", "not matched"
+            edge_cell = "not compared to baseline edge map"
         elif not comparable or sobel is None or nms is None:
             sobel_cell, nms_cell = "failed", "failed"
+            edge_cell = "failed"
         else:
             sobel_cell, nms_cell = f"{sobel:.2f}×", f"{nms:.2f}×"
+            edge_cell = "exact"
         pixels = int(row["width"]) * int(row["height"])
         table.append({
             "case": name,
@@ -276,22 +319,26 @@ def build_rows(baseline_rows, current_rows, statuses, reference_ok, settings_mat
             "total": fmt_ms(row.get("compute_ms_median")),
             "sobel_cell": sobel_cell,
             "nms_cell": nms_cell,
+            "edge_cell": edge_cell,
             "sobel_ms": float(row["sobel_ms_median"]) if row.get("sobel_ms_median") else None,
             "nms_ms": float(row["nms_ms_median"]) if row.get("nms_ms_median") else None,
         })
     return table, any_failed
 
 
-def write_table(path, run_name, baseline_settings, current_settings, reasons, table, any_failed, settings_match):
+def write_table(path, run_name, baseline_name, baseline_settings, current_settings, reasons, table, any_failed, settings_match):
     if not settings_match:
         verdict = "not a matched speedup"
         headline = "This is not a successful speedup against the full-size baseline."
+        correctness = "Correctness: not compared to baseline edge map"
     elif any_failed or not table:
         verdict = "not a successful speedup"
-        headline = "This is not a successful speedup. A scalar case failed, or its edge map does not match the scalar reference (accuracy.csv F1 / agreement)."
+        headline = f"This is not a successful speedup. A scalar case failed, or its edge map does not match the {baseline_name} baseline edge map."
+        correctness = f"Correctness: failed against the {baseline_name} edge map. Sobel and NMS speedup are withheld where the timed scalar map is not an exact 0/255 match."
     else:
         verdict = "matched comparison"
-        headline = "Matched comparison against run-001. Speedup is the baseline median divided by this run's median."
+        headline = f"Matched comparison against {baseline_name}. Speedup is the baseline median divided by this run's median."
+        correctness = f"Correctness: each timed scalar edge map matches the {baseline_name} edge map for the same case (exact 0/255)."
     photo = lambda settings: settings["photo"] or "none (procedural images)"
     lines = [
         "# Sobel and NMS",
@@ -300,20 +347,22 @@ def write_table(path, run_name, baseline_settings, current_settings, reasons, ta
         "",
         headline,
         "",
+        correctness,
+        "",
     ]
     if any_failed:
-        lines.append("One or more scalar cases failed, or the edge map does not match the scalar reference.")
+        lines.append(f"One or more scalar cases failed, or the edge map does not match the {baseline_name} baseline edge map.")
         lines.append("")
     if reasons:
-        lines.append("This run does not match run-001 on the comparison settings:")
+        lines.append(f"This run does not match {baseline_name} on the comparison settings:")
         lines.extend(f"- {reason}" for reason in reasons)
         lines.append("")
     lines.extend([
-        "Speedup cells stay blank of ratios unless the image cases, warmup, iteration count, compiler, machine, and thresholds match, and that size's scalar status is ok with F1 1 and agreement 100 against the scalar reference.",
+        "Speedup cells stay blank of ratios unless the image cases, warmup, iteration count, compiler, machine, and thresholds match, and that size's timed scalar edge map is an exact 0/255 match to the baseline edge map. A different image size is not compared to the baseline edge map.",
         "",
-        "| Setting | run-001 | this run |",
+        f"| Setting | {baseline_name} | this run |",
         "| --- | --- | --- |",
-        f'| Run | {TIMESTAMP} | {run_name} |',
+        f'| Run | {baseline_name} | {run_name} |',
         f'| Photo | {photo(baseline_settings)} | {photo(current_settings)} |',
         f'| Resolution sizes | {size_text(baseline_settings["cases"])} | {size_text(current_settings["cases"])} |',
         f'| Warmup | {show(baseline_settings["warmup"])} | {show(current_settings["warmup"])} |',
@@ -325,26 +374,27 @@ def write_table(path, run_name, baseline_settings, current_settings, reasons, ta
         "",
         "Median milliseconds for the scalar implementation. Total is `compute_ms_median`.",
         "",
-        "| Image | Blur (ms) | Sobel (ms) | NMS (ms) | Threshold (ms) | Hysteresis (ms) | Total (ms) | Sobel vs baseline | NMS vs baseline |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
+        "| Image | Blur (ms) | Sobel (ms) | NMS (ms) | Threshold (ms) | Hysteresis (ms) | Total (ms) | Sobel vs baseline | NMS vs baseline | Edge map vs baseline |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |",
     ])
     if not table:
         withheld = "not matched" if not settings_match else "failed"
-        lines.append(f"|  |  |  |  |  |  |  | {withheld} | {withheld} |")
+        edge = "not compared to baseline edge map" if not settings_match else "failed"
+        lines.append(f"|  |  |  |  |  |  |  | {withheld} | {withheld} | {edge} |")
     for row in table:
         lines.append(
-            f'| {row["label"]} | {row["blur"]} | {row["sobel"]} | {row["nms"]} | {row["threshold"]} | {row["hysteresis"]} | {row["total"]} | {row["sobel_cell"]} | {row["nms_cell"]} |'
+            f'| {row["label"]} | {row["blur"]} | {row["sobel"]} | {row["nms"]} | {row["threshold"]} | {row["hysteresis"]} | {row["total"]} | {row["sobel_cell"]} | {row["nms_cell"]} | {row["edge_cell"]} |'
         )
     lines.extend([
         "",
-        "Raw samples, hardware, and accuracy stay in this run directory (`run/raw.csv`, `run/summary.csv`, `run/accuracy.csv`, `run/status.json`, `hardware_before.txt`). The stage view is this table plus `sobel_time.png` and `nms_time.png`.",
+        "Raw samples, hardware, and the in-run accuracy table stay in this run directory (`run/raw.csv`, `run/summary.csv`, `run/accuracy.csv`, `run/status.json`, `hardware_before.txt`). The stage verdict compares the timed scalar edge map `run/edges/<case>_<scalar index>.pgm` with the same file under the frozen baseline. `accuracy.csv` still records the in-run OpenCV reference; its scalar-versus-scalar row is not this verdict. The stage view is this table plus `sobel_time.png` and `nms_time.png`.",
         "",
     ])
     path.write_text("\n".join(lines))
     return verdict
 
 
-def write_plots(directory, run_name, baseline_rows, table, settings_match):
+def write_plots(directory, run_name, baseline_name, baseline_rows, table, settings_match):
     import os
     import tempfile
     cache = tempfile.TemporaryDirectory(prefix="canny-matplotlib-")
@@ -354,12 +404,12 @@ def write_plots(directory, run_name, baseline_rows, table, settings_match):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     try:
-        _write_plot_figures(directory, run_name, baseline_rows, table, settings_match, plt)
+        _write_plot_figures(directory, run_name, baseline_name, baseline_rows, table, settings_match, plt)
     finally:
         cache.cleanup()
 
 
-def _write_plot_figures(directory, run_name, baseline_rows, table, settings_match, plt):
+def _write_plot_figures(directory, run_name, baseline_name, baseline_rows, table, settings_match, plt):
 
     baseline_points = []
     for row in baseline_rows:
@@ -381,7 +431,7 @@ def _write_plot_figures(directory, run_name, baseline_rows, table, settings_matc
             ax.plot(
                 [point["megapixels"] for point in baseline_points],
                 [point[field] for point in baseline_points],
-                "o--", color="#4c566a", label="run-001 baseline",
+                "o--", color="#4c566a", label=f"{baseline_name} baseline",
             )
         current = [row for row in table if row[field] is not None]
         if current:
@@ -420,7 +470,7 @@ def _write_plot_figures(directory, run_name, baseline_rows, table, settings_matc
             cell = "sobel_cell" if stage == "Sobel" else "nms_cell"
             for row in table:
                 column.append(f'{row["width"]}x{row["height"]}  {row[cell]}')
-            note = "Speedup = run-001 median / this run median."
+            note = f"Speedup = {baseline_name} median / this run median."
         side.set_title("Speedup")
         side.text(0.0, 1.0, "\n".join(column), va="top", ha="left", family="monospace", fontsize=8, transform=side.transAxes)
         fig.suptitle(note, fontsize=10)
@@ -438,7 +488,10 @@ def compare(run_dir):
     reasons = mismatch_reasons(baseline_settings, current_settings)
     settings_match = not reasons
     statuses = scalar_status(run_dir)
-    reference_ok = scalar_reference_match(run_dir)
+    if settings_match:
+        reference_ok = baseline_edge_match(source, run_dir, list(statuses))
+    else:
+        reference_ok = {}
     table, any_failed = build_rows(
         resolution_rows(read_csv(source / "run" / "summary.csv")),
         resolution_rows(read_csv(run_dir / "run" / "summary.csv")),
@@ -446,15 +499,17 @@ def compare(run_dir):
         reference_ok,
         settings_match,
     )
-    for name, status in statuses.items():
-        if status != "ok" or not reference_ok.get(name, False):
-            any_failed = True
+    if settings_match:
+        for name, status in statuses.items():
+            if status != "ok" or not reference_ok.get(name, False):
+                any_failed = True
     comparison = run_dir / "comparison"
     comparison.mkdir(exist_ok=True)
+    baseline_name = source.name
     verdict = write_table(
-        comparison / "results.md", run_dir.name, baseline_settings, current_settings, reasons, table, any_failed, settings_match,
+        comparison / "results.md", run_dir.name, baseline_name, baseline_settings, current_settings, reasons, table, any_failed, settings_match,
     )
-    write_plots(comparison, run_dir.name, resolution_rows(read_csv(source / "run" / "summary.csv")), table, settings_match)
+    write_plots(comparison, run_dir.name, baseline_name, resolution_rows(read_csv(source / "run" / "summary.csv")), table, settings_match)
     print(f"Verdict: {verdict}")
     print(f"Table: {comparison / 'results.md'}")
     print(f"Sobel plot: {comparison / 'sobel_time.png'}")
@@ -467,7 +522,7 @@ def compare(run_dir):
 def init_baseline():
     if BASELINE_JSON.exists():
         raise SystemExit(f"Refusing to overwrite {BASELINE_JSON}")
-    source = find_timestamp(TIMESTAMP)
+    source = find_timestamp(BASELINE_RUN)
     checksums = {rel: sha256(source / rel) for rel in CHECK_FILES}
     settings = extract_settings(source)
     resolution = [case for case in settings["cases"] if case["axis"] == "resolution"]
@@ -478,17 +533,23 @@ def init_baseline():
         raise SystemExit("Selected baseline scalar status is not ok for every resolution case")
     BASELINE_DIR.mkdir(parents=True, exist_ok=False)
     pointer = {
-        "run_id": "run-001",
-        "timestamp": TIMESTAMP,
+        "run_id": BASELINE_RUN,
+        "timestamp": BASELINE_RUN,
         "source_dir_at_freeze": str(source.relative_to(ROOT)),
+        "previous_baseline": {
+            "timestamp": PREVIOUS_TIMESTAMP,
+            "source_dir_at_freeze": f"benchmark_results/archive/{PREVIOUS_TIMESTAMP}",
+            "note": "Previous default. The archive directory is unchanged and is no longer the default baseline.",
+        },
         "checksums": checksums,
-        "note": "Pointer only. Read the timestamp directory in place. Do not edit that directory.",
+        "note": "Pointer only. Read run-003 in place. Do not edit that directory.",
     }
     BASELINE_JSON.write_text(json.dumps(pointer, indent=2) + "\n")
     (BASELINE_DIR / "README.md").write_text(
-        "run-001 is a pointer to the frozen full-size scalar baseline.\n\n"
-        f"Source timestamp: {TIMESTAMP}\n"
-        "Checksums and the source path are in baseline.json. The timing files stay in the timestamp directory and are read in place.\n"
+        "run-001 is a pointer. The default baseline is run-003.\n\n"
+        f"Source: {source.relative_to(ROOT)}\n"
+        "Checksums and the source path are in baseline.json. The timing files stay in that directory and are read in place.\n\n"
+        f"The previous baseline was benchmark_results/archive/{PREVIOUS_TIMESTAMP}. That archive is unchanged and is no longer the default.\n"
     )
     print(f"Wrote {BASELINE_JSON}")
     print(f"Source: {source}")
