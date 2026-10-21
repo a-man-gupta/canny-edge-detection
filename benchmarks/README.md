@@ -25,6 +25,10 @@ Results go to `benchmark_results/<UTC>-<pid>/`. Open `run/plots/index.html`. `OU
 
 `./collect_hw_info.sh hardware_report.txt` records CPU, cache, memory, and the Python OpenCV build. Cache sizes are topology, not a measured performance limit.
 
+## Sobel and NMS
+
+Part 2 and Part 3 use `./scripts/run_stages.sh`. The view for that command is two line plots and one table under `benchmark_results/run-00N/comparison/`. Details are in [stages/README.md](stages/README.md).
+
 For a single-core scalar run, prefix the wrapper with `taskset -c 2`. The same pin also limits `opencv-multi`. Stop other heavy jobs if you are comparing times.
 
 ## Dataset and what the scalar code does

@@ -18,6 +18,9 @@ OpenCV comparisons live in `benchmarks/run.py`: `opencv-1` (one thread) and `ope
 ./scripts/setup_remote.sh
 ./scripts/run_remote.sh --smoke -- --iterations 3 --warmup 2
 ./scripts/run_remote.sh --photo /path/to/natural-image.jpg
+./scripts/run_stages.sh
 ```
+
+`./scripts/run_stages.sh` is the Part 2 / Part 3 comparison. It writes `benchmark_results/run-00N/comparison/` (Sobel plot, NMS plot, and one table) against the frozen run-001 baseline. See [benchmarks/stages/README.md](benchmarks/stages/README.md).
 
 `setup_remote.sh` selects Python 3.10–3.14, because the default `python3` on this machine is too old for the pinned NumPy. `cpu_spec.txt` is a saved `lscpu` of the measurement machine. `./collect_hw_info.sh` writes a fresh CPU report. No script installs system packages.
