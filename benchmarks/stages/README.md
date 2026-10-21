@@ -1,6 +1,6 @@
 # Sobel and NMS stages
 
-Comparison view for Part 2 (Sobel) and Part 3 (non-maximum suppression). Timing still comes from `benchmarks/run.py` through `scripts/run_remote.sh`. This folder does not run a second timer and does not change the Canny kernels.
+Comparison view for Part 2 (Sobel) and Part 3 (non-maximum suppression). Millisecond timing still comes from `benchmarks/run.py` through `scripts/run_remote.sh`. This folder does not run a second timer and does not change the Canny kernels. The Part 2 executable also records an RDTSC measurement. That measurement is separate from the millisecond median plots.
 
 ```bash
 ./scripts/run_stages.sh
@@ -23,6 +23,37 @@ A run is a matched comparison only when the image cases, warmup, iteration count
 ```bash
 ./scripts/run_stages.sh --smoke -- --warmup 1 --iterations 2
 ```
+
+`./scripts/run_stages.sh` times `build/canny_scalar`. To time the Part 2 Sobel kernel instead:
+
+```bash
+./scripts/run_stages.sh --kernel part2
+```
+
+That runs `build/canny_scalar` and `build/canny_part2` on the same images. The table times `part2`. The frozen-baseline edge check uses the part2 map, not the scalar-versus-scalar row in `accuracy.csv`. Magnitude is compared to the scalar dump bitwise, or within 1 float32 ulp if a last-bit difference remains. Direction is compared as the four NMS categories, not as a continuous angle. NMS and the final edge map must match the scalar executable exactly. `--kernel scalar` is the default. The next numbered directory is one past the highest existing `run-NNN`. A smoke run uses different sizes, so it is not a matched speedup.
+
+The scalar reference keeps `-fno-tree-vectorize -fno-tree-slp-vectorize`. `sobel_kernel.cpp` adds `-mavx2 -ffp-contract=off` and does not get `-ffast-math` or `-mfma`. That AVX2 difference is written in the results table. It is not treated as a different machine. Both flag lines come from `build_provenance/compile_commands.json`.
+
+`./scripts/run_stages.sh --kernel part2` also writes:
+
+- `benchmark_results/run-00N/comparison/sobel_threshold.png`
+- `benchmark_results/run-00N/comparison/sobel_cycles.csv`
+
+`./scripts/run_stages.sh` without `--kernel part2` does not write those two files. `sobel_time.png` and `nms_time.png` stay median milliseconds.
+
+## Lab clock and threshold
+
+Same formula as the 18-645 benchmarking lab, `private/18645/benchmarking_starter/latency/latency_simd_fma.c`, and the kernel-design driver, `private/18645/KernelDesignTemplate/kernel_driver.c`.
+
+The clock is `rdtsc`. Those files scale it by `MAX_FREQ / BASE_FREQ` with `MAX_FREQ = 3.4` and `BASE_FREQ = 2.4`:
+
+```
+turbo_cycles = rdtsc_cycles * 3.4 / 2.4
+cycles_per_pixel = turbo_cycles / (width * height)
+flops_per_cycle = (23 * width * height) / turbo_cycles
+```
+
+`cycles_per_pixel` is the latency line in `latency_simd_fma.c`: `MAX_FREQ/BASE_FREQ * rdtsc / outputs`, with one output per pixel. `flops_per_cycle` is the kernel-driver line `(2*m*n*k) / (rdtsc * MAX_FREQ/BASE_FREQ)`, with 23 floating-point operations per pixel instead of `2*m*n*k` (8 for `gx`, 8 for `gy`, 4 for the magnitude, 3 for the angle). The horizontal line is that lab's peak, 16 flops/cycle (2 FMA ports × 4 doubles × 2 flops, the same two ports that issue 16 single-precision adds per cycle), drawn as `23 / 16 = 1.4375` cycles/pixel. This is not the steady_clock millisecond median.
 
 ## Source-level operations per pixel
 

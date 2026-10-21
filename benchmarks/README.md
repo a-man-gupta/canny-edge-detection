@@ -2,7 +2,8 @@
 
 Measures three CPU implementations on the same images:
 
-- `scalar` — `build/canny_scalar`, the five-stage C++ pipeline
+- `scalar` — `build/canny_scalar`, the five-stage C++ pipeline.
+- `part2` — `build/canny_part2`, the same pipeline with the optimized Sobel kernel. `./scripts/run_stages.sh --kernel part2` runs both executables on the same images.
 - `opencv-1` — OpenCV Gaussian blur plus Canny, one thread, OpenCL off
 - `opencv-multi` — the same OpenCV calls with the requested thread count
 

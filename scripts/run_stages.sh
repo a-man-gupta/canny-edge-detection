@@ -2,6 +2,8 @@
 # Next numbered Sobel/NMS benchmark. One command; timing stays in benchmarks/run.py.
 # run-001/baseline.json points at the frozen baseline (run-003). The new run id is
 # one past the highest existing run-NNN, so an existing run is never reused.
+# Default times build/canny_scalar. --kernel part2 times build/canny_part2
+# and also runs build/canny_scalar on the same images. The timed edge map is part2.
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
@@ -57,4 +59,9 @@ printf '\nComparison view:\n  %s\n  %s\n  %s\n' \
   "$OUT/comparison/sobel_time.png" \
   "$OUT/comparison/nms_time.png" \
   "$OUT/comparison/results.md"
+if [[ -f "$OUT/comparison/sobel_threshold.png" ]]; then
+  printf '  %s\n  %s\n' \
+    "$OUT/comparison/sobel_threshold.png" \
+    "$OUT/comparison/sobel_cycles.csv"
+fi
 exit "$STATUS"

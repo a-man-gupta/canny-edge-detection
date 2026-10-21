@@ -17,6 +17,15 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 # Stage columns the plotter can stack. A run that omits a stage simply has no bar for it.
 STAGES = ['blur_ms', 'sobel_ms', 'nms_ms', 'threshold_ms', 'hysteresis_ms', 'canny_ms', 'fused_ms']
+# Part 2 Sobel RDTSC fields. Millisecond keys stay required; these are optional.
+SOBEL_CLOCK_KEYS = {
+    'sobel_rdtsc_cycles',
+    'sobel_turbo_cycles',
+    'sobel_cycles_per_pixel',
+    'sobel_flops_per_cycle',
+    'sobel_threshold_cycles_per_pixel',
+    'sobel_threshold_flops_per_cycle',
+}
 
 
 # Pixel agreement of two 0/255 edge maps.
@@ -42,8 +51,11 @@ def validate(payload, iterations, shape, output):
         if set(row) != keys or not {'compute_ms', 'e2e_ms'} <= keys:
             raise ValueError('Sample keys must be consistent and include compute_ms/e2e_ms')
         for key, value in row.items():
-            if not key.endswith('_ms') or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+            if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value < 0:
                 raise ValueError(f'Invalid timing {key}: {value}')
+            if key.endswith('_ms') or key in SOBEL_CLOCK_KEYS:
+                continue
+            raise ValueError(f'Invalid timing {key}: {value}')
         if row['compute_ms'] <= 0 or row['e2e_ms'] <= 0:
             raise ValueError('Total timings must be positive')
         if row['compute_ms'] > row['e2e_ms'] * 1.05 + .01:
@@ -97,6 +109,12 @@ def main():
     p.add_argument('--threads', type=int, default=0, help='OpenCV multi baseline: 0 = detected CPU count; record actual threads')
     p.add_argument('--implementations', nargs='+', default=['scalar', 'opencv-1', 'opencv-multi'])
     p.add_argument('--adapters', type=Path, help='JSON mapping names to executable argument arrays')
+    p.add_argument('--scalar-bin', type=Path, default=ROOT/'build/canny_scalar',
+                   help='Scalar reference executable')
+    p.add_argument('--part2-bin', type=Path, default=ROOT/'build/canny_part2',
+                   help='Optimized Part 2 executable, selected with --implementations part2')
+    p.add_argument('--stages-dump', action='store_true',
+                   help='Write mag, angle, and NMS dumps next to the edge maps')
     p.add_argument('--case', nargs='+', help='Run only these exact case names')
     p.add_argument('--timeout', type=float, default=7200, help='Seconds per external executable/case')
     p.add_argument('--min-f1', type=float, help='Fail if any scalar-reference comparison falls below this value')
@@ -107,12 +125,15 @@ def main():
         p.error('--min-f1 must be in [0,1]')
     if a.min_f1 is not None and 'scalar' not in a.implementations:
         p.error('--min-f1 requires scalar in --implementations')
-    # scalar is the C++ executable. opencv-1 and opencv-multi run in this process.
-    adapters = {'scalar': [str(ROOT/'build/canny_scalar')]}
+    # scalar is the reference executable. part2 is the optimized Sobel executable.
+    # They stay separate so accuracy.csv does not compare part2 with itself.
+    adapters = {'scalar': [str(a.scalar_bin)]}
+    if 'part2' in a.implementations:
+        adapters['part2'] = [str(a.part2_bin)]
     if a.adapters:
         custom = json.loads(a.adapters.read_text())
         for name, cmd in custom.items():
-            if name in ['scalar', 'opencv-1', 'opencv-multi']:
+            if name in ['scalar', 'opencv-1', 'opencv-multi', 'part2']:
                 p.error(f'Cannot override builtin {name}')
             if not isinstance(cmd, list) or not cmd or not all(isinstance(v,str) for v in cmd):
                 p.error(f'Adapter {name} must be a nonempty argument array')
@@ -140,6 +161,8 @@ def main():
     a.output.mkdir(parents=True, exist_ok=False)
     (a.output/'edges').mkdir()
     (a.output/'native_logs').mkdir()
+    if a.stages_dump:
+        (a.output/'stages').mkdir()
     def git(*args):
         r = subprocess.run(['git', '-C', str(ROOT), *args], capture_output=True, text=True)
         return r.stdout.strip() if r.returncode == 0 else 'unavailable'
@@ -184,7 +207,7 @@ def main():
                 else:
                     cmd = adapters[name]
                     if not Path(cmd[0]).is_file():
-                        if name not in ['scalar']:
+                        if name not in ['scalar', 'part2']:
                             raise FileNotFoundError(f'Configured adapter missing: {cmd[0]}')
                         status.update(status='skipped', reason=f'Executable not built: {cmd[0]}')
                         statuses.append(status)
@@ -192,6 +215,8 @@ def main():
                     command = [*cmd, '--input',str(input_path),'--output',str(output_path.resolve()),
                                '--iterations',str(a.iterations),'--warmup',str(a.warmup),
                                '--low',str(a.low),'--high',str(a.high),'--sigma',str(a.sigma)]
+                    if a.stages_dump:
+                        command += ['--stages-dump', str((a.output/'stages'/f'{stem}.bin').resolve())]
                     result = subprocess.run(command,capture_output=True,text=True,timeout=a.timeout)
                     (a.output/'native_logs'/f'{stem}.stdout').write_text(result.stdout)
                     (a.output/'native_logs'/f'{stem}.stderr').write_text(result.stderr)

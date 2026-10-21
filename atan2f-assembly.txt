@@ -1,0 +1,221 @@
+
+/lib64/libm.so.6:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+00000000000124a0 <atan2f@@GLIBC_2.2.5>:
+   124a0:	f3 0f 1e fa          	endbr64 
+   124a4:	66 0f ef d2          	pxor   %xmm2,%xmm2
+   124a8:	ba 00 00 00 00       	mov    $0x0,%edx
+   124ad:	0f 2e ca             	ucomiss %xmm2,%xmm1
+   124b0:	0f 9b c0             	setnp  %al
+   124b3:	0f 45 c2             	cmovne %edx,%eax
+   124b6:	84 c0                	test   %al,%al
+   124b8:	74 0d                	je     124c7 <atan2f@@GLIBC_2.2.5+0x27>
+   124ba:	0f 2e c2             	ucomiss %xmm2,%xmm0
+   124bd:	0f 9b c0             	setnp  %al
+   124c0:	0f 44 d0             	cmove  %eax,%edx
+   124c3:	84 d2                	test   %dl,%dl
+   124c5:	75 51                	jne    12518 <atan2f@@GLIBC_2.2.5+0x78>
+   124c7:	48 83 ec 18          	sub    $0x18,%rsp
+   124cb:	f3 0f 11 4c 24 0c    	movss  %xmm1,0xc(%rsp)
+   124d1:	f3 0f 11 44 24 08    	movss  %xmm0,0x8(%rsp)
+   124d7:	e8 14 ea 02 00       	callq  40ef0 <__atan2f_finite@@GLIBC_2.15>
+   124dc:	66 0f ef d2          	pxor   %xmm2,%xmm2
+   124e0:	ba 00 00 00 00       	mov    $0x0,%edx
+   124e5:	0f 2e c2             	ucomiss %xmm2,%xmm0
+   124e8:	0f 9b c0             	setnp  %al
+   124eb:	0f 45 c2             	cmovne %edx,%eax
+   124ee:	84 c0                	test   %al,%al
+   124f0:	74 1e                	je     12510 <atan2f@@GLIBC_2.2.5+0x70>
+   124f2:	f3 0f 10 64 24 08    	movss  0x8(%rsp),%xmm4
+   124f8:	ba 01 00 00 00       	mov    $0x1,%edx
+   124fd:	f3 0f 10 5c 24 0c    	movss  0xc(%rsp),%xmm3
+   12503:	0f 2e e2             	ucomiss %xmm2,%xmm4
+   12506:	0f 9a c0             	setp   %al
+   12509:	0f 45 c2             	cmovne %edx,%eax
+   1250c:	84 c0                	test   %al,%al
+   1250e:	75 20                	jne    12530 <atan2f@@GLIBC_2.2.5+0x90>
+   12510:	48 83 c4 18          	add    $0x18,%rsp
+   12514:	c3                   	retq   
+   12515:	0f 1f 00             	nopl   (%rax)
+   12518:	48 8b 05 a1 ea 36 00 	mov    0x36eaa1(%rip),%rax        # 380fc0 <f64xsubf128@@GLIBC_2.28+0x30a8b0>
+   1251f:	8b 00                	mov    (%rax),%eax
+   12521:	85 c0                	test   %eax,%eax
+   12523:	75 a2                	jne    124c7 <atan2f@@GLIBC_2.2.5+0x27>
+   12525:	bf 67 00 00 00       	mov    $0x67,%edi
+   1252a:	e9 a1 0e 00 00       	jmpq   133d0 <lgammaf@GLIBC_2.2.5+0xe0>
+   1252f:	90                   	nop
+   12530:	0f 54 1d 89 ab 09 00 	andps  0x9ab89(%rip),%xmm3        # ad0c0 <f64xsubf128@@GLIBC_2.28+0x369b0>
+   12537:	f3 0f 10 15 91 ab 09 	movss  0x9ab91(%rip),%xmm2        # ad0d0 <f64xsubf128@@GLIBC_2.28+0x369c0>
+   1253e:	00 
+   1253f:	0f 2e d3             	ucomiss %xmm3,%xmm2
+   12542:	72 cc                	jb     12510 <atan2f@@GLIBC_2.2.5+0x70>
+   12544:	48 8b 05 6d ea 36 00 	mov    0x36ea6d(%rip),%rax        # 380fb8 <f64xsubf128@@GLIBC_2.28+0x30a8a8>
+   1254b:	64 c7 00 22 00 00 00 	movl   $0x22,%fs:(%rax)
+   12552:	eb bc                	jmp    12510 <atan2f@@GLIBC_2.2.5+0x70>
+
+/lib64/libm.so.6:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+0000000000040ef0 <__atan2f_finite@@GLIBC_2.15>:
+   40ef0:	f3 0f 1e fa          	endbr64 
+   40ef4:	66 0f 7e ca          	movd   %xmm1,%edx
+   40ef8:	89 d6                	mov    %edx,%esi
+   40efa:	66 0f 7e c1          	movd   %xmm0,%ecx
+   40efe:	81 e6 ff ff ff 7f    	and    $0x7fffffff,%esi
+   40f04:	89 c8                	mov    %ecx,%eax
+   40f06:	25 ff ff ff 7f       	and    $0x7fffffff,%eax
+   40f0b:	81 fe 00 00 80 7f    	cmp    $0x7f800000,%esi
+   40f11:	0f 8f a9 00 00 00    	jg     40fc0 <__atan2f_finite@@GLIBC_2.15+0xd0>
+   40f17:	3d 00 00 80 7f       	cmp    $0x7f800000,%eax
+   40f1c:	0f 8f 9e 00 00 00    	jg     40fc0 <__atan2f_finite@@GLIBC_2.15+0xd0>
+   40f22:	81 fa 00 00 80 3f    	cmp    $0x3f800000,%edx
+   40f28:	0f 84 22 01 00 00    	je     41050 <__atan2f_finite@@GLIBC_2.15+0x160>
+   40f2e:	53                   	push   %rbx
+   40f2f:	89 d3                	mov    %edx,%ebx
+   40f31:	89 cf                	mov    %ecx,%edi
+   40f33:	c1 fb 1e             	sar    $0x1e,%ebx
+   40f36:	c1 ef 1f             	shr    $0x1f,%edi
+   40f39:	83 e3 02             	and    $0x2,%ebx
+   40f3c:	09 fb                	or     %edi,%ebx
+   40f3e:	85 c0                	test   %eax,%eax
+   40f40:	74 66                	je     40fa8 <__atan2f_finite@@GLIBC_2.15+0xb8>
+   40f42:	85 f6                	test   %esi,%esi
+   40f44:	0f 84 e6 00 00 00    	je     41030 <__atan2f_finite@@GLIBC_2.15+0x140>
+   40f4a:	81 fe 00 00 80 7f    	cmp    $0x7f800000,%esi
+   40f50:	74 7e                	je     40fd0 <__atan2f_finite@@GLIBC_2.15+0xe0>
+   40f52:	3d 00 00 80 7f       	cmp    $0x7f800000,%eax
+   40f57:	0f 84 d3 00 00 00    	je     41030 <__atan2f_finite@@GLIBC_2.15+0x140>
+   40f5d:	29 f0                	sub    %esi,%eax
+   40f5f:	c1 f8 17             	sar    $0x17,%eax
+   40f62:	83 f8 3c             	cmp    $0x3c,%eax
+   40f65:	0f 8e ed 00 00 00    	jle    41058 <__atan2f_finite@@GLIBC_2.15+0x168>
+   40f6b:	f3 0f 10 15 39 11 0a 	movss  0xa1139(%rip),%xmm2        # e20ac <f64xsubf128@@GLIBC_2.28+0x6b99c>
+   40f72:	00 
+   40f73:	f3 0f 5c 15 51 11 0a 	subss  0xa1151(%rip),%xmm2        # e20cc <f64xsubf128@@GLIBC_2.28+0x6b9bc>
+   40f7a:	00 
+   40f7b:	83 fb 01             	cmp    $0x1,%ebx
+   40f7e:	0f 84 1c 01 00 00    	je     410a0 <__atan2f_finite@@GLIBC_2.15+0x1b0>
+   40f84:	83 fb 02             	cmp    $0x2,%ebx
+   40f87:	0f 84 2b 01 00 00    	je     410b8 <__atan2f_finite@@GLIBC_2.15+0x1c8>
+   40f8d:	85 db                	test   %ebx,%ebx
+   40f8f:	74 24                	je     40fb5 <__atan2f_finite@@GLIBC_2.15+0xc5>
+   40f91:	f3 0f 58 15 57 11 0a 	addss  0xa1157(%rip),%xmm2        # e20f0 <f64xsubf128@@GLIBC_2.28+0x6b9e0>
+   40f98:	00 
+   40f99:	f3 0f 5c 15 37 11 0a 	subss  0xa1137(%rip),%xmm2        # e20d8 <f64xsubf128@@GLIBC_2.28+0x6b9c8>
+   40fa0:	00 
+   40fa1:	eb 12                	jmp    40fb5 <__atan2f_finite@@GLIBC_2.15+0xc5>
+   40fa3:	0f 1f 44 00 00       	nopl   0x0(%rax,%rax,1)
+   40fa8:	83 fb 02             	cmp    $0x2,%ebx
+   40fab:	74 53                	je     41000 <__atan2f_finite@@GLIBC_2.15+0x110>
+   40fad:	83 fb 03             	cmp    $0x3,%ebx
+   40fb0:	74 36                	je     40fe8 <__atan2f_finite@@GLIBC_2.15+0xf8>
+   40fb2:	0f 28 d0             	movaps %xmm0,%xmm2
+   40fb5:	0f 28 c2             	movaps %xmm2,%xmm0
+   40fb8:	5b                   	pop    %rbx
+   40fb9:	c3                   	retq   
+   40fba:	66 0f 1f 44 00 00    	nopw   0x0(%rax,%rax,1)
+   40fc0:	0f 28 d1             	movaps %xmm1,%xmm2
+   40fc3:	f3 0f 58 d0          	addss  %xmm0,%xmm2
+   40fc7:	0f 28 c2             	movaps %xmm2,%xmm0
+   40fca:	c3                   	retq   
+   40fcb:	0f 1f 44 00 00       	nopl   0x0(%rax,%rax,1)
+   40fd0:	3d 00 00 80 7f       	cmp    $0x7f800000,%eax
+   40fd5:	0f 84 fd 00 00 00    	je     410d8 <__atan2f_finite@@GLIBC_2.15+0x1e8>
+   40fdb:	83 fb 02             	cmp    $0x2,%ebx
+   40fde:	74 20                	je     41000 <__atan2f_finite@@GLIBC_2.15+0x110>
+   40fe0:	83 fb 03             	cmp    $0x3,%ebx
+   40fe3:	75 33                	jne    41018 <__atan2f_finite@@GLIBC_2.15+0x128>
+   40fe5:	0f 1f 00             	nopl   (%rax)
+   40fe8:	f3 0f 10 15 f0 10 0a 	movss  0xa10f0(%rip),%xmm2        # e20e0 <f64xsubf128@@GLIBC_2.28+0x6b9d0>
+   40fef:	00 
+   40ff0:	f3 0f 5c 15 e4 10 0a 	subss  0xa10e4(%rip),%xmm2        # e20dc <f64xsubf128@@GLIBC_2.28+0x6b9cc>
+   40ff7:	00 
+   40ff8:	eb bb                	jmp    40fb5 <__atan2f_finite@@GLIBC_2.15+0xc5>
+   40ffa:	66 0f 1f 44 00 00    	nopw   0x0(%rax,%rax,1)
+   41000:	f3 0f 10 15 d4 10 0a 	movss  0xa10d4(%rip),%xmm2        # e20dc <f64xsubf128@@GLIBC_2.28+0x6b9cc>
+   41007:	00 
+   41008:	f3 0f 58 15 c8 10 0a 	addss  0xa10c8(%rip),%xmm2        # e20d8 <f64xsubf128@@GLIBC_2.28+0x6b9c8>
+   4100f:	00 
+   41010:	eb a3                	jmp    40fb5 <__atan2f_finite@@GLIBC_2.15+0xc5>
+   41012:	66 0f 1f 44 00 00    	nopw   0x0(%rax,%rax,1)
+   41018:	66 0f ef d2          	pxor   %xmm2,%xmm2
+   4101c:	83 fb 01             	cmp    $0x1,%ebx
+   4101f:	75 94                	jne    40fb5 <__atan2f_finite@@GLIBC_2.15+0xc5>
+   41021:	f3 0f 10 15 ab 10 0a 	movss  0xa10ab(%rip),%xmm2        # e20d4 <f64xsubf128@@GLIBC_2.28+0x6b9c4>
+   41028:	00 
+   41029:	eb 8a                	jmp    40fb5 <__atan2f_finite@@GLIBC_2.15+0xc5>
+   4102b:	0f 1f 44 00 00       	nopl   0x0(%rax,%rax,1)
+   41030:	85 c9                	test   %ecx,%ecx
+   41032:	78 54                	js     41088 <__atan2f_finite@@GLIBC_2.15+0x198>
+   41034:	f3 0f 10 15 a0 10 0a 	movss  0xa10a0(%rip),%xmm2        # e20dc <f64xsubf128@@GLIBC_2.28+0x6b9cc>
+   4103b:	00 
+   4103c:	f3 0f 58 15 68 10 0a 	addss  0xa1068(%rip),%xmm2        # e20ac <f64xsubf128@@GLIBC_2.28+0x6b99c>
+   41043:	00 
+   41044:	e9 6c ff ff ff       	jmpq   40fb5 <__atan2f_finite@@GLIBC_2.15+0xc5>
+   41049:	0f 1f 80 00 00 00 00 	nopl   0x0(%rax)
+   41050:	e9 fb 49 00 00       	jmpq   45a50 <atanf@@GLIBC_2.2.5>
+   41055:	0f 1f 00             	nopl   (%rax)
+   41058:	85 d2                	test   %edx,%edx
+   4105a:	79 0d                	jns    41069 <__atan2f_finite@@GLIBC_2.15+0x179>
+   4105c:	66 0f ef d2          	pxor   %xmm2,%xmm2
+   41060:	83 f8 c4             	cmp    $0xffffffc4,%eax
+   41063:	0f 8c 12 ff ff ff    	jl     40f7b <__atan2f_finite@@GLIBC_2.15+0x8b>
+   41069:	f3 0f 5e c1          	divss  %xmm1,%xmm0
+   4106d:	0f 54 05 4c c0 06 00 	andps  0x6c04c(%rip),%xmm0        # ad0c0 <f64xsubf128@@GLIBC_2.28+0x369b0>
+   41074:	e8 d7 49 00 00       	callq  45a50 <atanf@@GLIBC_2.2.5>
+   41079:	0f 28 d0             	movaps %xmm0,%xmm2
+   4107c:	e9 fa fe ff ff       	jmpq   40f7b <__atan2f_finite@@GLIBC_2.15+0x8b>
+   41081:	0f 1f 80 00 00 00 00 	nopl   0x0(%rax)
+   41088:	f3 0f 10 15 54 10 0a 	movss  0xa1054(%rip),%xmm2        # e20e4 <f64xsubf128@@GLIBC_2.28+0x6b9d4>
+   4108f:	00 
+   41090:	f3 0f 5c 15 44 10 0a 	subss  0xa1044(%rip),%xmm2        # e20dc <f64xsubf128@@GLIBC_2.28+0x6b9cc>
+   41097:	00 
+   41098:	e9 18 ff ff ff       	jmpq   40fb5 <__atan2f_finite@@GLIBC_2.15+0xc5>
+   4109d:	0f 1f 00             	nopl   (%rax)
+   410a0:	66 0f 7e d0          	movd   %xmm2,%eax
+   410a4:	05 00 00 00 80       	add    $0x80000000,%eax
+   410a9:	66 0f 6e d0          	movd   %eax,%xmm2
+   410ad:	e9 03 ff ff ff       	jmpq   40fb5 <__atan2f_finite@@GLIBC_2.15+0xc5>
+   410b2:	66 0f 1f 44 00 00    	nopw   0x0(%rax,%rax,1)
+   410b8:	f3 0f 58 15 30 10 0a 	addss  0xa1030(%rip),%xmm2        # e20f0 <f64xsubf128@@GLIBC_2.28+0x6b9e0>
+   410bf:	00 
+   410c0:	f3 0f 10 05 10 10 0a 	movss  0xa1010(%rip),%xmm0        # e20d8 <f64xsubf128@@GLIBC_2.28+0x6b9c8>
+   410c7:	00 
+   410c8:	f3 0f 5c c2          	subss  %xmm2,%xmm0
+   410cc:	e9 e1 fe ff ff       	jmpq   40fb2 <__atan2f_finite@@GLIBC_2.15+0xc2>
+   410d1:	0f 1f 80 00 00 00 00 	nopl   0x0(%rax)
+   410d8:	83 fb 02             	cmp    $0x2,%ebx
+   410db:	74 1f                	je     410fc <__atan2f_finite@@GLIBC_2.15+0x20c>
+   410dd:	83 fb 03             	cmp    $0x3,%ebx
+   410e0:	74 4c                	je     4112e <__atan2f_finite@@GLIBC_2.15+0x23e>
+   410e2:	83 fb 01             	cmp    $0x1,%ebx
+   410e5:	74 32                	je     41119 <__atan2f_finite@@GLIBC_2.15+0x229>
+   410e7:	f3 0f 10 15 ed 0f 0a 	movss  0xa0fed(%rip),%xmm2        # e20dc <f64xsubf128@@GLIBC_2.28+0x6b9cc>
+   410ee:	00 
+   410ef:	f3 0f 58 15 d9 0f 0a 	addss  0xa0fd9(%rip),%xmm2        # e20d0 <f64xsubf128@@GLIBC_2.28+0x6b9c0>
+   410f6:	00 
+   410f7:	e9 b9 fe ff ff       	jmpq   40fb5 <__atan2f_finite@@GLIBC_2.15+0xc5>
+   410fc:	f3 0f 10 15 40 d2 06 	movss  0x6d240(%rip),%xmm2        # ae344 <f64xsubf128@@GLIBC_2.28+0x37c34>
+   41103:	00 
+   41104:	f3 0f 59 15 c4 0f 0a 	mulss  0xa0fc4(%rip),%xmm2        # e20d0 <f64xsubf128@@GLIBC_2.28+0x6b9c0>
+   4110b:	00 
+   4110c:	f3 0f 58 15 c8 0f 0a 	addss  0xa0fc8(%rip),%xmm2        # e20dc <f64xsubf128@@GLIBC_2.28+0x6b9cc>
+   41113:	00 
+   41114:	e9 9c fe ff ff       	jmpq   40fb5 <__atan2f_finite@@GLIBC_2.15+0xc5>
+   41119:	f3 0f 10 15 c7 0f 0a 	movss  0xa0fc7(%rip),%xmm2        # e20e8 <f64xsubf128@@GLIBC_2.28+0x6b9d8>
+   41120:	00 
+   41121:	f3 0f 5c 15 b3 0f 0a 	subss  0xa0fb3(%rip),%xmm2        # e20dc <f64xsubf128@@GLIBC_2.28+0x6b9cc>
+   41128:	00 
+   41129:	e9 87 fe ff ff       	jmpq   40fb5 <__atan2f_finite@@GLIBC_2.15+0xc5>
+   4112e:	f3 0f 10 15 b6 0f 0a 	movss  0xa0fb6(%rip),%xmm2        # e20ec <f64xsubf128@@GLIBC_2.28+0x6b9dc>
+   41135:	00 
+   41136:	f3 0f 59 15 92 0f 0a 	mulss  0xa0f92(%rip),%xmm2        # e20d0 <f64xsubf128@@GLIBC_2.28+0x6b9c0>
+   4113d:	00 
+   4113e:	f3 0f 5c 15 96 0f 0a 	subss  0xa0f96(%rip),%xmm2        # e20dc <f64xsubf128@@GLIBC_2.28+0x6b9cc>
+   41145:	00 
+   41146:	e9 6a fe ff ff       	jmpq   40fb5 <__atan2f_finite@@GLIBC_2.15+0xc5>

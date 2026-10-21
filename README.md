@@ -21,6 +21,6 @@ OpenCV comparisons live in `benchmarks/run.py`: `opencv-1` (one thread) and `ope
 ./scripts/run_stages.sh
 ```
 
-`./scripts/run_stages.sh` is the Part 2 / Part 3 comparison. It writes `benchmark_results/run-00N/comparison/` (Sobel plot, NMS plot, and one table) against the frozen run-003 baseline. The pointer is `benchmark_results/run-001/baseline.json`. See [benchmarks/stages/README.md](benchmarks/stages/README.md).
+`./scripts/run_stages.sh` is the Part 2 / Part 3 comparison. It writes `benchmark_results/run-00N/comparison/` (Sobel plot, NMS plot, and one table) against the frozen run-003 baseline. The pointer is `benchmark_results/run-001/baseline.json`. See [benchmarks/stages/README.md](benchmarks/stages/README.md). `./scripts/run_stages.sh --kernel part2` times `build/canny_part2` and also runs `build/canny_scalar` on the same images. Sobel is `sobel_kernel`; the other stages stay on the scalar code.
 
 `setup_remote.sh` selects Python 3.10–3.14, because the default `python3` on this machine is too old for the pinned NumPy. `cpu_spec.txt` is a saved `lscpu` of the measurement machine. `./collect_hw_info.sh` writes a fresh CPU report. No script installs system packages.
