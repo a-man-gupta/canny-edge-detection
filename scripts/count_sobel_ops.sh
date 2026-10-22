@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 CXX=${CXX:-c++}
 mkdir -p build
 # Same flags as the real kernel build, plus the loop markers.
-"$CXX" -std=c++17 -O3 -mavx2 -ffp-contract=off -mno-avx256-split-unaligned-load -mno-avx256-split-unaligned-store -DSOBEL_MARK_LOOPS -S src/sobel_kernel.cpp -o build/sobel_kernel_marked.s
+"$CXX" -std=c++17 -O3 -mavx2 -mfma -ffp-contract=off -mno-avx256-split-unaligned-load -mno-avx256-split-unaligned-store -DSOBEL_MARK_LOOPS -S src/sobel_kernel.cpp -o build/sobel_kernel_marked.s
 
 awk '
 /# loop .* begin/ { inside = 1; name = $3; pixels = $NF; fp = 0; flop = 0; other = 0; next }

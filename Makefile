@@ -12,7 +12,7 @@
 
 CXX          = g++
 CORE         = 10
-KERNEL_FLAGS = -std=c++17 -O3 -mavx2 -ffp-contract=off \
+KERNEL_FLAGS = -std=c++17 -O3 -mavx2 -mfma -ffp-contract=off \
                -mno-avx256-split-unaligned-load -mno-avx256-split-unaligned-store
 DRIVER_FLAGS = -std=c++17 -O3 -fno-tree-vectorize -Isrc
 EXTRA        =

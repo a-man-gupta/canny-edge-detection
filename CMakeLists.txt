@@ -9,14 +9,15 @@ add_executable(canny_part2 src/canny_part2.cpp src/sobel_kernel.cpp)
 # Part 2 benchmark in the assignment-driver style: scalar baseline vs kernel, cycles per pixel vs peak.
 add_executable(sobel_driver src/sobel_driver.cpp src/sobel_kernel.cpp)
 # AVX2 on the kernel translation unit only. canny_scalar.cpp keeps -fno-tree-vectorize
-# and does not get -mavx2. -mfma is not passed. -ffp-contract=off keeps gx*gx + gy*gy
-# from contracting into an FMA, so the magnitude stays mul, mul, add, sqrt.
+# and does not get -mavx2. -mfma allows the kernel's explicit FMA intrinsics (gx and gy:
+# 2*dm + (a + b)); they are exact because the blur values are whole numbers.
+# -ffp-contract=off still stops the compiler from fusing anything else on its own.
 # -mno-avx256-split-unaligned-*: gcc 8's default tuning splits every unaligned 256-bit load and
 # store into two 128-bit halves (vinsertf128 / vextractf128). That is only a tuning choice, not
-# different math: turning it off keeps AVX2, no FMA, same results, and removes ~50 instructions
+# different math: turning it off keeps the same results, and removes ~50 instructions
 # and the register spills from the 32-pixel loop (measured on ece024: 2.49 -> 1.72 cycles/pixel).
 set_source_files_properties(src/sobel_kernel.cpp PROPERTIES COMPILE_FLAGS
-  "-mavx2 -ffp-contract=off -mno-avx256-split-unaligned-load -mno-avx256-split-unaligned-store")
+  "-mavx2 -mfma -ffp-contract=off -mno-avx256-split-unaligned-load -mno-avx256-split-unaligned-store")
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(canny_scalar PRIVATE -Wall -Wextra -Wpedantic)
   target_compile_options(canny_part2 PRIVATE -Wall -Wextra -Wpedantic)

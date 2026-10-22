@@ -29,7 +29,8 @@
 
 // FLOPs per pixel, counted from the math the kernel does (like 2*m*n*k for matrix multiply):
 //   a = br - tl, b = tr - bl, dm = mr - ml, dv = bm - tm       -> 4 sub                  = 4
-//   gx = (a + b) + (dm + dm), gy = (a - b) + (dv + dv)         -> 5 add + 1 sub          = 6
+//   gx = 2*dm + (a + b), gy = 2*dv + (a - b)                   -> 1 add + 1 sub + 2 FMA  = 6
+//   (an FMA is a multiply and an add: 2 FLOPs in one instruction)
 //   mag = sqrt(gx*gx + gy*gy)                                  -> 2 mul + 1 add + 1 sqrt = 4
 //   direction: |gx| * tan22.5, |gy| * tan22.5                  -> 2 mul                  = 2
 //   (the 2 compares and the blends are not floating-point arithmetic, so not FLOPs)
