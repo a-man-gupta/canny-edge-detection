@@ -1,5 +1,5 @@
-// Part 2 pipeline. Same as canny_scalar.cpp, except Sobel calls the AVX2 kernel
-// (--kernel v1 or v2, default v2). Parts 1, 3, 4, and 5 are unchanged.
+// Part 2 pipeline. Same as canny_scalar.cpp, except Sobel calls the AVX2 kernel.
+// Parts 1, 3, 4, and 5 are unchanged.
 // Prints the same millisecond JSON as canny_scalar, so benchmarks/run.py can time it.
 // Cycle counts and peak comparisons for the kernel are in sobel_driver.cpp.
 #include "hysteresis.hpp"
@@ -31,7 +31,7 @@ static std::string token(std::istream& in) {
 }
 
 int main(int argc, char** argv) try {
-    std::string input, output, kernel="v2";
+    std::string input, output;
     int iterations=100, warmup=10; float low=50, high=100, sigma=1.4f;
 
     // Read options: input, output, how many runs to time, and Canny parameters.
@@ -39,15 +39,13 @@ int main(int argc, char** argv) try {
         if(a+1==argc) throw std::runtime_error("Missing option value");
         std::string k=argv[a], v=argv[a+1];
         if(k=="--input") input=v; else if(k=="--output") output=v;
-        else if(k=="--kernel") kernel=v;
         else if(k=="--iterations") iterations=std::stoi(v);
         else if(k=="--warmup") warmup=std::stoi(v);
         else if(k=="--low") low=std::stof(v); else if(k=="--high") high=std::stof(v);
         else if(k=="--sigma") sigma=std::stof(v); else throw std::runtime_error("Unknown option "+k);
     }
     if(iterations<1 || warmup<0 || !std::isfinite(sigma) || sigma<=0 ||
-       !std::isfinite(low) || !std::isfinite(high) || low<0 || high<=low ||
-       (kernel!="v1" && kernel!="v2"))
+       !std::isfinite(low) || !std::isfinite(high) || low<0 || high<=low)
         throw std::runtime_error("Invalid iteration count or parameters");
 
     // Read image: binary P5 grayscale PGM, at least 5x5, into one uint8 buffer.
@@ -95,10 +93,7 @@ int main(int argc, char** argv) try {
         t[1]=Clock::now();
 
         // Part 2: the AVX2 Sobel kernel. Reads blur. Writes mag and angle (0/45/90/135).
-        if (kernel == "v1")
-            sobel_kernel(w, h, blur.data(), mag.data(), angle.data());
-        else
-            sobel_kernel_v2(w, h, blur.data(), mag.data(), angle.data());
+        sobel_kernel(w, h, blur.data(), mag.data(), angle.data());
         t[2]=Clock::now();
 
         // Part 3. Suppress gradient pixels that are not a ridge along their direction.
@@ -168,7 +163,7 @@ int main(int argc, char** argv) try {
     if(!out) throw std::runtime_error("Could not write output");
 
     // Timing report: one JSON object on stdout. File I/O above is not included in the samples.
-    std::cout<<"{\"timing_method\":\"steady_clock instrumented pipeline; allocations and I/O excluded\",\"sobel_kernel\":\""<<kernel<<"\",\"samples\":[";
+    std::cout<<"{\"timing_method\":\"steady_clock instrumented pipeline; allocations and I/O excluded\",\"samples\":[";
     for(size_t i=0;i<samples.size();++i) {
         if(i) std::cout<<",";
         std::cout<<"{\"compute_ms\":"<<samples[i][0]<<",\"e2e_ms\":"<<samples[i][0];

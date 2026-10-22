@@ -1,318 +1,196 @@
 #include "sobel_kernel.hpp"
 
-#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <immintrin.h>
 
-// tan(22.5°) = sqrt(2) - 1. tan(67.5°) = 1 / tan(22.5°).
-// OpenCV's Canny uses this sector test (its fixed-point TG22) and never calls atan2.
-// One rule for every pixel, including zeros and exact boundaries:
-//   |gy| < |gx| * tan(22.5°)            -> horizontal, store 0
-//   |gx| < |gy| * tan(22.5°)            -> vertical,   store 90
-//   otherwise, gx and gy the same sign  -> 45 degrees
-//   otherwise                           -> 135 degrees
-// Equality is the diagonal. This is not a promise that the bin matches atan2.
-static const float kTan22 = static_cast<float>(std::sqrt(2.0) - 1.0);
 
-// Assembly comments around one loop iteration, so scripts/count_sobel_ops.sh can count
-// the instructions inside it ("# loop v1 begin 16" ... "# loop end").
-// They only exist when compiled with -DSOBEL_MARK_LOOPS; the normal build has none.
+// Sector test on squares: gy^2 < gx^2 * tan(22.5)^2 is |gy| < |gx| * tan(22.5) without the
+// absolute values (gx*gx and gy*gy are already computed for the magnitude, and are exact
+// because blur values are whole numbers). tan(22.5)^2 = (sqrt(2) - 1)^2 = 3 - 2*sqrt(2).
+static const float kTan22Sq = static_cast<float>(3.0 - 2.0 * std::sqrt(2.0));
+
+// Markers so scripts/count_sobel_ops.sh can see one iteration.
+// Present only with -DSOBEL_MARK_LOOPS. The normal build has none.
 #ifdef SOBEL_MARK_LOOPS
-#define LOOP_BEGIN(name, pixels) __asm__ __volatile__("# loop " name " begin %c0" :: "i"(pixels) : "memory")
+#define LOOP_BEGIN(pixels) __asm__ __volatile__("# loop kernel begin %c0" :: "i"(pixels) : "memory")
 #define LOOP_END() __asm__ __volatile__("# loop end" ::: "memory")
 #else
-#define LOOP_BEGIN(name, pixels)
+#define LOOP_BEGIN(pixels)
 #define LOOP_END()
 #endif
 
-static float representative(int category) {
-    if (category == 1)
-        return 45.f;
-    if (category == 2)
-        return 90.f;
-    if (category == 3)
-        return 135.f;
-    return 0.f;
-}
-
-static int direction_category(float gx, float gy) {
-    float ax = std::fabs(gx);
-    float ay = std::fabs(gy);
-    if (ay < ax * kTan22)
-        return 0;
-    if (ax < ay * kTan22)
-        return 2;
-    return std::signbit(gx) == std::signbit(gy) ? 1 : 3;
-}
-
+// Scalar direction bin. Borders use this. Same four tests as the vector path.
 float sobel_classify_angle(float gx, float gy) {
-    return representative(direction_category(gx, gy));
+    float gx2 = gx * gx;
+    float gy2 = gy * gy;
+    if (gy2 < gx2 * kTan22Sq)
+        return 0.f;
+    if (gx2 < gy2 * kTan22Sq)
+        return 90.f;
+    if (std::signbit(gx) == std::signbit(gy))
+        return 45.f;
+    return 135.f;
 }
 
-static inline __m256 abs_ps(__m256 v) {
-    return _mm256_andnot_ps(_mm256_set1_ps(-0.0f), v);
+// 32 pixels starting at column x: four groups of 8. An add takes 4 cycles and there
+// are 2 FP units, so all four gradients are computed before any group is finished.
+// Reads columns x-1 .. x+32, so the caller needs x+32 <= x_limit.
+static inline void sobel32(const float* top, const float* mid, const float* bot,
+                           float* mag_row, float* angle_row, int x) {
+    __m256 gx[4], gy[4];
+
+    // gx = (tr - tl) + (br - bl) + 2*(mr - ml)
+    // gy = (bl - tl) + (br - tr) + 2*(bm - tm)
+    // t/m/b are the three blur rows. l/r are one column left or right of the center.
+    // The corners appear in both, so share them: with a = br - tl and b = tr - bl,
+    //   gx = (a + b) + 2*dm      gy = (a - b) + 2*dv
+    // That is 10 adds/subs per group instead of 12.
+    // 2*d is d+d, not a multiply. Blur values are whole numbers, so this add order
+    // still matches the scalar formula bit for bit.
+    for (int g = 0; g < 4; ++g) {
+        const int c = x + 8 * g;
+        const __m256 a = _mm256_sub_ps(_mm256_loadu_ps(bot + c + 1), _mm256_loadu_ps(top + c - 1));
+        const __m256 b = _mm256_sub_ps(_mm256_loadu_ps(top + c + 1), _mm256_loadu_ps(bot + c - 1));
+        const __m256 dm = _mm256_sub_ps(_mm256_loadu_ps(mid + c + 1), _mm256_loadu_ps(mid + c - 1));
+        const __m256 dv = _mm256_sub_ps(_mm256_loadu_ps(bot + c), _mm256_loadu_ps(top + c));
+        gx[g] = _mm256_add_ps(_mm256_add_ps(a, b), _mm256_add_ps(dm, dm));
+        gy[g] = _mm256_add_ps(_mm256_sub_ps(a, b), _mm256_add_ps(dv, dv));
+    }
+
+    // Magnitude, then the direction bin, then both stores.
+    for (int g = 0; g < 4; ++g) {
+        const int c = x + 8 * g;
+        // mag = sqrt(gx*gx + gy*gy). Multiply, multiply, add, sqrt. No FMA.
+        const __m256 gx2 = _mm256_mul_ps(gx[g], gx[g]);
+        const __m256 gy2 = _mm256_mul_ps(gy[g], gy[g]);
+        _mm256_storeu_ps(mag_row + c, _mm256_sqrt_ps(_mm256_add_ps(gx2, gy2)));
+
+        // The two sector tests on the squares. Each lane is all-ones where the test is true.
+        const __m256 tan22sq = _mm256_set1_ps(kTan22Sq);
+        const __m256 horiz = _mm256_cmp_ps(gy2, _mm256_mul_ps(gx2, tan22sq), _CMP_LT_OQ);
+        const __m256 vert = _mm256_cmp_ps(gx2, _mm256_mul_ps(gy2, tan22sq), _CMP_LT_OQ);
+
+        // Diagonal first. gx xor gy has its sign bit set when the signs differ,
+        // and blendv looks only at that bit: 135 if they differ, else 45.
+        __m256 bin = _mm256_blendv_ps(_mm256_set1_ps(45.f), _mm256_set1_ps(135.f), _mm256_xor_ps(gx[g], gy[g]));
+        // Vertical replaces the diagonal.
+        bin = _mm256_blendv_ps(bin, _mm256_set1_ps(90.f), vert);
+        // Horizontal replaces both. 0.0f is all zero bits, so clearing the lane stores 0.
+        bin = _mm256_andnot_ps(horiz, bin);
+        _mm256_storeu_ps(angle_row + c, bin);
+    }
 }
 
-// One group of 8 lanes. Same comparisons as direction_category, no atan2.
-static inline void classify_store(__m256 gx, __m256 gy, float* dst) {
-    const __m256 tan22 = _mm256_set1_ps(kTan22);
-    const __m256 ax = abs_ps(gx);
-    const __m256 ay = abs_ps(gy);
-    const __m256 ax_t = _mm256_mul_ps(ax, tan22);
-    const __m256 ay_t = _mm256_mul_ps(ay, tan22);
-    const __m256 horiz = _mm256_cmp_ps(ay, ax_t, _CMP_LT_OQ);
-    const __m256 vert = _mm256_cmp_ps(ax, ay_t, _CMP_LT_OQ);
-    const __m256 sign_bit = _mm256_set1_ps(-0.0f);
-    const __m256 same = _mm256_castsi256_ps(_mm256_cmpeq_epi32(
-        _mm256_castps_si256(_mm256_and_ps(gx, sign_bit)),
-        _mm256_castps_si256(_mm256_and_ps(gy, sign_bit))));
-    __m256 rep = _mm256_blendv_ps(_mm256_set1_ps(135.f), _mm256_set1_ps(45.f), same);
-    rep = _mm256_blendv_ps(rep, _mm256_set1_ps(90.f), vert);
-    rep = _mm256_blendv_ps(rep, _mm256_set1_ps(0.f), horiz);
-    _mm256_storeu_ps(dst, rep);
-}
-
-// v1 vector loop for one interior row (moved out of sobel_kernel unchanged).
-// Sixteen interior pixels: group A is x..x+7, group B is x+8..x+15.
-// x+15 is still left of x_limit, so neither group clamps or reads past column x_limit.
+// One interior row.
+//
+// Main loop: 64 pixels per iteration, i.e. the 32-pixel block unrolled twice by hand.
+// Each block finishes its four groups before the next block starts, so at most four
+// groups are live and everything stays in the 16 ymm registers (no spills; unrolling
+// as eight groups at once spilled). Unrolling halves the loop bookkeeping (pointer
+// updates, compare, jump) per pixel.
+// After that, one more 32-pixel block if it fits, then leftover groups of 8. If a few
+// columns still remain, one more group of 8 ends on the last interior column. It
+// overlaps columns already written and stores the same values. The right border is
+// not written here.
 int sobel_row_avx2(const float* top, const float* mid, const float* bot,
                    float* mag_row, float* angle_row, int x_begin, int x_limit) {
     int x = x_begin;
-    for (; x + 16 <= x_limit; x += 16) {
-        LOOP_BEGIN("v1", 16);
-        // Group A starts at column x. Group B starts eight pixels later.
-        // Each step issues A and then B so the two chains stay independent.
-        __m256 a_tl = _mm256_loadu_ps(top + x - 1);
-        __m256 b_tl = _mm256_loadu_ps(top + x + 7);
-        __m256 a_tm = _mm256_loadu_ps(top + x);
-        __m256 b_tm = _mm256_loadu_ps(top + x + 8);
-        __m256 a_tr = _mm256_loadu_ps(top + x + 1);
-        __m256 b_tr = _mm256_loadu_ps(top + x + 9);
 
-        // gx = -tl + tr. gy = -tl - 2*tm - tr. 2*tm is tm+tm.
-        __m256 a_gx = _mm256_sub_ps(_mm256_setzero_ps(), a_tl);
-        __m256 b_gx = _mm256_sub_ps(_mm256_setzero_ps(), b_tl);
-        __m256 a_gy = a_gx;
-        __m256 b_gy = b_gx;
-        a_gx = _mm256_add_ps(a_gx, a_tr);
-        b_gx = _mm256_add_ps(b_gx, b_tr);
-        a_gy = _mm256_sub_ps(a_gy, _mm256_add_ps(a_tm, a_tm));
-        b_gy = _mm256_sub_ps(b_gy, _mm256_add_ps(b_tm, b_tm));
-        a_gy = _mm256_sub_ps(a_gy, a_tr);
-        b_gy = _mm256_sub_ps(b_gy, b_tr);
-
-        __m256 a_ml = _mm256_loadu_ps(mid + x - 1);
-        __m256 b_ml = _mm256_loadu_ps(mid + x + 7);
-        __m256 a_mr = _mm256_loadu_ps(mid + x + 1);
-        __m256 b_mr = _mm256_loadu_ps(mid + x + 9);
-        // Middle row has vertical weight 0, so only gx uses it.
-        a_gx = _mm256_sub_ps(a_gx, _mm256_add_ps(a_ml, a_ml));
-        b_gx = _mm256_sub_ps(b_gx, _mm256_add_ps(b_ml, b_ml));
-        a_gx = _mm256_add_ps(a_gx, _mm256_add_ps(a_mr, a_mr));
-        b_gx = _mm256_add_ps(b_gx, _mm256_add_ps(b_mr, b_mr));
-
-        __m256 a_bl = _mm256_loadu_ps(bot + x - 1);
-        __m256 b_bl = _mm256_loadu_ps(bot + x + 7);
-        __m256 a_bm = _mm256_loadu_ps(bot + x);
-        __m256 b_bm = _mm256_loadu_ps(bot + x + 8);
-        __m256 a_br = _mm256_loadu_ps(bot + x + 1);
-        __m256 b_br = _mm256_loadu_ps(bot + x + 9);
-        a_gx = _mm256_sub_ps(a_gx, a_bl);
-        b_gx = _mm256_sub_ps(b_gx, b_bl);
-        a_gx = _mm256_add_ps(a_gx, a_br);
-        b_gx = _mm256_add_ps(b_gx, b_br);
-        a_gy = _mm256_add_ps(a_gy, a_bl);
-        b_gy = _mm256_add_ps(b_gy, b_bl);
-        a_gy = _mm256_add_ps(a_gy, _mm256_add_ps(a_bm, a_bm));
-        b_gy = _mm256_add_ps(b_gy, _mm256_add_ps(b_bm, b_bm));
-        a_gy = _mm256_add_ps(a_gy, a_br);
-        b_gy = _mm256_add_ps(b_gy, b_br);
-
-        // Separate squares, then add, then hardware sqrt. Group B is independent of group A.
-        __m256 a_sum = _mm256_add_ps(_mm256_mul_ps(a_gx, a_gx), _mm256_mul_ps(a_gy, a_gy));
-        __m256 b_sum = _mm256_add_ps(_mm256_mul_ps(b_gx, b_gx), _mm256_mul_ps(b_gy, b_gy));
-        __m256 a_mag = _mm256_sqrt_ps(a_sum);
-        __m256 b_mag = _mm256_sqrt_ps(b_sum);
-        _mm256_storeu_ps(mag_row + x, a_mag);
-        _mm256_storeu_ps(mag_row + x + 8, b_mag);
-
-        // Magnitudes are stored. Park group B so its two registers can be reused
-        // by the masks in group A's direction test, then reload B and classify it.
-        alignas(32) float b_gx_mem[8], b_gy_mem[8];
-        _mm256_store_ps(b_gx_mem, b_gx);
-        _mm256_store_ps(b_gy_mem, b_gy);
-        classify_store(a_gx, a_gy, angle_row + x);
-        classify_store(_mm256_load_ps(b_gx_mem), _mm256_load_ps(b_gy_mem), angle_row + x + 8);
+    for (; x + 64 <= x_limit; x += 64) {
+        LOOP_BEGIN(64);
+        sobel32(top, mid, bot, mag_row, angle_row, x);        // pixels x    .. x+31
+        sobel32(top, mid, bot, mag_row, angle_row, x + 32);   // pixels x+32 .. x+63
         LOOP_END();
     }
-    return x;
-}
 
-// ---------------------------------------------------------------------------------
-// v2: same results, fewer instructions, more independent work per iteration.
-//
-// Why the results match v1: the pipeline's blur is rounded to whole numbers 0..255.
-// Then gx and gy are whole numbers (|g| <= 1020) and gx*gx + gy*gy < 2^24, so every
-// partial sum is exact in float. Adding the terms in a different order gives the
-// same bits, so v2 can use a shorter formula than v1.
-//
-// What changed, per group of 8 pixels (counted from clang -O3 -mavx2 output):
-//   v1: 23 instructions on the 2 FP ports (add/sub/mul/cmp/sqrt)
-//   v2: 20 (gx, gy as small trees; direction picked with xor + andnot)
-// And v2 handles G groups per iteration (default 4 = 32 pixels). The 2 FP ports
-// each take 4 cycles per add, so about 8 independent instructions must be ready
-// every cycle; 4 groups give enough of them.
-// ---------------------------------------------------------------------------------
-
-// gx = (tr - tl) + (br - bl) + 2 (mr - ml);  gy = (bl - tl) + (br - tr) + 2 (bm - tm).
-static inline void gradients8(const float* top, const float* mid, const float* bot, int x,
-                              __m256& gx, __m256& gy) {
-    const __m256 tl = _mm256_loadu_ps(top + x - 1);
-    const __m256 tr = _mm256_loadu_ps(top + x + 1);
-    const __m256 bl = _mm256_loadu_ps(bot + x - 1);
-    const __m256 br = _mm256_loadu_ps(bot + x + 1);
-    const __m256 dm = _mm256_sub_ps(_mm256_loadu_ps(mid + x + 1), _mm256_loadu_ps(mid + x - 1));
-    const __m256 dv = _mm256_sub_ps(_mm256_loadu_ps(bot + x), _mm256_loadu_ps(top + x));
-#ifdef __FMA__
-    const __m256 two = _mm256_set1_ps(2.f);
-    gx = _mm256_fmadd_ps(two, dm, _mm256_add_ps(_mm256_sub_ps(tr, tl), _mm256_sub_ps(br, bl)));
-    gy = _mm256_fmadd_ps(two, dv, _mm256_add_ps(_mm256_sub_ps(bl, tl), _mm256_sub_ps(br, tr)));
-#else
-    gx = _mm256_add_ps(_mm256_add_ps(_mm256_sub_ps(tr, tl), _mm256_sub_ps(br, bl)), _mm256_add_ps(dm, dm));
-    gy = _mm256_add_ps(_mm256_add_ps(_mm256_sub_ps(bl, tl), _mm256_sub_ps(br, tr)), _mm256_add_ps(dv, dv));
-#endif
-}
-
-// Magnitude, then the same bin as direction_category:
-//   rep = 45 if the sign bits of gx and gy match, else 135   (blendv reads the xor sign bit)
-//   rep = 90 where |gx| < |gy| tan22
-//   rep = 0  where |gy| < |gx| tan22                       (andnot: 0.0f is all-zero bits)
-static inline void finish8(__m256 gx, __m256 gy, float* mag, float* angle) {
-#ifdef __FMA__
-    const __m256 sum = _mm256_fmadd_ps(gx, gx, _mm256_mul_ps(gy, gy));
-#else
-    const __m256 sum = _mm256_add_ps(_mm256_mul_ps(gx, gx), _mm256_mul_ps(gy, gy));
-#endif
-    _mm256_storeu_ps(mag, _mm256_sqrt_ps(sum));
-    const __m256 sign = _mm256_set1_ps(-0.0f);
-    const __m256 tan22 = _mm256_set1_ps(kTan22);
-    const __m256 ax = _mm256_andnot_ps(sign, gx);
-    const __m256 ay = _mm256_andnot_ps(sign, gy);
-    const __m256 horiz = _mm256_cmp_ps(ay, _mm256_mul_ps(ax, tan22), _CMP_LT_OQ);
-    const __m256 vert = _mm256_cmp_ps(ax, _mm256_mul_ps(ay, tan22), _CMP_LT_OQ);
-    __m256 rep = _mm256_blendv_ps(_mm256_set1_ps(45.f), _mm256_set1_ps(135.f), _mm256_xor_ps(gx, gy));
-    rep = _mm256_blendv_ps(rep, _mm256_set1_ps(90.f), vert);
-    rep = _mm256_andnot_ps(horiz, rep);
-    _mm256_storeu_ps(angle, rep);
-}
-
-// G groups of 8 pixels per iteration.
-// Step 1: gx, gy for every group (2 registers per group stay live).
-// Step 2: finish the groups one at a time (magnitude, sqrt, direction, two stores).
-// With G = 4 this needs about 12 of the 16 ymm registers, so nothing spills to memory.
-// G is a template parameter so the compiler keeps gx[] and gy[] in registers.
-template <int G>
-static int row_v2(const float* top, const float* mid, const float* bot,
-                  float* mag_row, float* angle_row, int x_begin, int x_limit) {
-    int x = x_begin;
-    for (; x + 8 * G <= x_limit; x += 8 * G) {
-        LOOP_BEGIN("v2", 8 * G);
-        __m256 gx[G], gy[G];
-        for (int g = 0; g < G; ++g)
-            gradients8(top, mid, bot, x + 8 * g, gx[g], gy[g]);
-        for (int g = 0; g < G; ++g)
-            finish8(gx[g], gy[g], mag_row + x + 8 * g, angle_row + x + 8 * g);
-        LOOP_END();
+    if (x + 32 <= x_limit) {
+        sobel32(top, mid, bot, mag_row, angle_row, x);
+        x += 32;
     }
-    // Leftover whole groups of 8.
-    for (; x + 8 <= x_limit; x += 8) {
-        __m256 gx, gy;
-        gradients8(top, mid, bot, x, gx, gy);
-        finish8(gx, gy, mag_row + x, angle_row + x);
-    }
-    return x;
-}
 
-int sobel_row_avx2_v2(const float* top, const float* mid, const float* bot,
-                      float* mag_row, float* angle_row, int x_begin, int x_limit, int groups) {
-    switch (groups) {
-    case 1: return row_v2<1>(top, mid, bot, mag_row, angle_row, x_begin, x_limit);
-    case 2: return row_v2<2>(top, mid, bot, mag_row, angle_row, x_begin, x_limit);
-    case 8: return row_v2<8>(top, mid, bot, mag_row, angle_row, x_begin, x_limit);
-    default: return row_v2<4>(top, mid, bot, mag_row, angle_row, x_begin, x_limit);
-    }
-}
-
-// One interior row with the chosen vector loop. Returns the first column it did not write.
-static int vector_row(int version, int groups,
-                      const float* top, const float* mid, const float* bot,
-                      float* mag_row, float* angle_row, int x_begin, int x_limit) {
-    if (version == 2)
-        return sobel_row_avx2_v2(top, mid, bot, mag_row, angle_row, x_begin, x_limit, groups);
-    return sobel_row_avx2(top, mid, bot, mag_row, angle_row, x_begin, x_limit);
-}
-
-// Whole image. The border pixels (and the few columns left over at the end of each row)
-// need clamped samples, so they use the scalar code. Everything else uses the vector loop.
-static void sobel_image(int w, int h, const float* __restrict blur,
-                        float* __restrict mag, float* __restrict angle,
-                        int version, int groups) {
-    auto scalar_at = [&](int y, int x) {
-        auto b = [&](int j, int k) {
-            int sample_row = std::clamp(y + j, 0, h - 1);
-            int sample_col = std::clamp(x + k, 0, w - 1);
-            return blur[size_t(sample_row) * w + sample_col];
-        };
-        // Same association as canny_scalar.cpp.
-        float gx = -b(-1, -1) + b(-1, 1)
-                 - 2 * b(0, -1) + 2 * b(0, 1)
-                 - b(1, -1) + b(1, 1);
-        float gy = -b(-1, -1) - 2 * b(-1, 0) - b(-1, 1)
-                 + b(1, -1) + 2 * b(1, 0) + b(1, 1);
-        size_t i = size_t(y) * w + x;
-        mag[i] = std::sqrt(gx * gx + gy * gy);
-        angle[i] = sobel_classify_angle(gx, gy);
-    };
-
-    for (int y = 0; y < h; ++y) {
-        // Top and bottom rows clamp in y, so the whole row stays scalar.
-        if (y == 0 || y == h - 1) {
-            for (int x = 0; x < w; ++x)
-                scalar_at(y, x);
-            continue;
+    // Leftover whole groups of 8, then one overlapped group if a short tail remains.
+    for (;;) {
+        int c;
+        if (x + 8 <= x_limit) {
+            c = x;
+            x += 8;
+        } else if (x < x_limit && x_limit - 8 >= x_begin) {
+            c = x_limit - 8;
+            x = x_limit;
+        } else {
+            break;
         }
-        // Left border clamps in x.
-        scalar_at(y, 0);
-        const float* top = blur + size_t(y - 1) * w;
-        const float* mid = blur + size_t(y) * w;
-        const float* bot = blur + size_t(y + 1) * w;
-        // x_limit = w - 1 keeps every load inside the row (no clamp, no reading past it).
-        int x = vector_row(version, groups, top, mid, bot,
-                           mag + size_t(y) * w, angle + size_t(y) * w, 1, w - 1);
-        // Width tail and the right border. Same classifier, clamped samples.
-        for (; x < w; ++x)
-            scalar_at(y, x);
+
+        // Same gx, gy as one group in sobel32.
+        const __m256 a = _mm256_sub_ps(_mm256_loadu_ps(bot + c + 1), _mm256_loadu_ps(top + c - 1));
+        const __m256 b = _mm256_sub_ps(_mm256_loadu_ps(top + c + 1), _mm256_loadu_ps(bot + c - 1));
+        const __m256 dm = _mm256_sub_ps(_mm256_loadu_ps(mid + c + 1), _mm256_loadu_ps(mid + c - 1));
+        const __m256 dv = _mm256_sub_ps(_mm256_loadu_ps(bot + c), _mm256_loadu_ps(top + c));
+        const __m256 gx = _mm256_add_ps(_mm256_add_ps(a, b), _mm256_add_ps(dm, dm));
+        const __m256 gy = _mm256_add_ps(_mm256_sub_ps(a, b), _mm256_add_ps(dv, dv));
+
+        // Same magnitude and bin as one group in sobel32.
+        const __m256 gx2 = _mm256_mul_ps(gx, gx);
+        const __m256 gy2 = _mm256_mul_ps(gy, gy);
+        _mm256_storeu_ps(mag_row + c, _mm256_sqrt_ps(_mm256_add_ps(gx2, gy2)));
+        const __m256 tan22sq = _mm256_set1_ps(kTan22Sq);
+        const __m256 horiz = _mm256_cmp_ps(gy2, _mm256_mul_ps(gx2, tan22sq), _CMP_LT_OQ);
+        const __m256 vert = _mm256_cmp_ps(gx2, _mm256_mul_ps(gy2, tan22sq), _CMP_LT_OQ);
+        __m256 bin = _mm256_blendv_ps(_mm256_set1_ps(45.f), _mm256_set1_ps(135.f), _mm256_xor_ps(gx, gy));
+        bin = _mm256_blendv_ps(bin, _mm256_set1_ps(90.f), vert);
+        bin = _mm256_andnot_ps(horiz, bin);
+        _mm256_storeu_ps(angle_row + c, bin);
     }
+    return x;
 }
 
-// Part 2 kernel (v1).
-// 1. Read blur with the same clamped border as canny_scalar.cpp.
-// 2. Sobel gx, gy with the scalar left-to-right association. 2*sample is sample+sample.
-// 3. Magnitude is gx*gx, gy*gy, add, then sqrt. No rsqrt and no FMA.
-// 4. Direction is the four Part 3 bins, stored as 0, 45, 90, or 135.
+// One blur sample. A coordinate outside the image is clamped to the edge.
+static float sample(const float* blur, int w, int h, int y, int x) {
+    if (y < 0)
+        y = 0;
+    if (y >= h)
+        y = h - 1;
+    if (x < 0)
+        x = 0;
+    if (x >= w)
+        x = w - 1;
+    return blur[size_t(y) * w + x];
+}
+
+// One border pixel. gx and gy are written in the same order as canny_scalar.cpp.
+static void scalar_at(const float* blur, int w, int h, int y, int x,
+                      float* mag, float* angle) {
+    float gx = -sample(blur, w, h, y - 1, x - 1) + sample(blur, w, h, y - 1, x + 1)
+             - 2 * sample(blur, w, h, y, x - 1) + 2 * sample(blur, w, h, y, x + 1)
+             - sample(blur, w, h, y + 1, x - 1) + sample(blur, w, h, y + 1, x + 1);
+    float gy = -sample(blur, w, h, y - 1, x - 1) - 2 * sample(blur, w, h, y - 1, x) - sample(blur, w, h, y - 1, x + 1)
+             + sample(blur, w, h, y + 1, x - 1) + 2 * sample(blur, w, h, y + 1, x) + sample(blur, w, h, y + 1, x + 1);
+    size_t i = size_t(y) * w + x;
+    mag[i] = std::sqrt(gx * gx + gy * gy);
+    angle[i] = sobel_classify_angle(gx, gy);
+}
+
+// Whole image. Top and bottom rows clamp in y, so they stay scalar.
+// Left and right borders clamp in x, so they stay scalar. The interior of each
+// other row is sobel_row_avx2.
 void sobel_kernel(int w, int h,
                   const float* __restrict blur,
                   float* __restrict mag,
                   float* __restrict angle) {
-    sobel_image(w, h, blur, mag, angle, 1, 0);
-}
+    for (int y = 0; y < h; ++y) {
+        if (y == 0 || y == h - 1) {
+            for (int x = 0; x < w; ++x)
+                scalar_at(blur, w, h, y, x, mag, angle);
+            continue;
+        }
 
-// Part 2 kernel (v2). Same borders as v1; the interior uses sobel_row_avx2_v2.
-void sobel_kernel_v2(int w, int h,
-                     const float* __restrict blur,
-                     float* __restrict mag,
-                     float* __restrict angle,
-                     int groups) {
-    sobel_image(w, h, blur, mag, angle, 2, groups);
+        scalar_at(blur, w, h, y, 0, mag, angle);
+        const float* top = blur + size_t(y - 1) * w;
+        const float* mid = blur + size_t(y) * w;
+        const float* bot = blur + size_t(y + 1) * w;
+        int x = sobel_row_avx2(top, mid, bot, mag + size_t(y) * w, angle + size_t(y) * w, 1, w - 1);
+        for (; x < w; ++x)
+            scalar_at(blur, w, h, y, x, mag, angle);
+    }
 }
