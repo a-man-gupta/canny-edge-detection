@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sobel kernel walkthrough</title>
+<style>
+:root{--bg:#faf9f5;--fg:#1f1e1d;--muted:#6b6a65;--line:#d3d1c7;--card:#f1efe8;--teal:#e1f5ee;--teal-s:#0f6e56;--teal-t:#085041;--pur:#eeedfe;--pur-s:#534ab7;--pur-t:#3c3489;--hot:#d85a30;--amber:#faeeda;--amber-t:#633806}
+@media (prefers-color-scheme:dark){:root{--bg:#1f1e1d;--fg:#f1efe8;--muted:#b4b2a9;--line:#5f5e5a;--card:#2c2c2a;--teal:#085041;--teal-s:#5dcaa5;--teal-t:#e1f5ee;--pur:#3c3489;--pur-s:#afa9ec;--pur-t:#eeedfe;--amber:#633806;--amber-t:#faeeda}}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,sans-serif;margin:0;padding:20px 16px}
+main{max-width:900px;margin:0 auto}
+h1{font-size:22px;font-weight:500;margin:0}
+h2{font-size:19px;font-weight:500;margin:6px 0 4px}
+p,li{color:var(--muted);font-size:15px;margin:6px 0}
+b{color:var(--fg);font-weight:500}
+code{font:13px ui-monospace,Menlo,monospace;background:var(--card);padding:1px 5px;border-radius:4px;color:var(--fg)}
+.nav{display:flex;gap:6px;flex-wrap:wrap;margin:14px 0}
+.nav button{font:inherit;font-size:13px;background:transparent;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:4px 11px;cursor:pointer}
+.nav button.on{color:var(--fg);border:2px solid var(--teal-s)}
+.ctrl{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0}
+.ctrl button{font:inherit;font-size:14px;background:transparent;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:6px 12px;cursor:pointer}
+.ctrl button.on{border:2px solid var(--teal-s)}
+.row{display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start}
+.grid{display:grid;gap:3px}
+.px{width:34px;height:34px;border-radius:4px;display:flex;align-items:center;justify-content:center;font:11px ui-monospace,Menlo,monospace;position:relative}
+.panel{background:var(--card);border-radius:10px;padding:12px 14px;min-width:240px;flex:1}
+.mono{font:13px/1.7 ui-monospace,Menlo,monospace;color:var(--fg)}
+.k{display:grid;grid-template-columns:repeat(3,40px);gap:3px;margin:4px 0 8px}
+.k div{height:30px;border-radius:4px;display:flex;align-items:center;justify-content:center;font:12px ui-monospace,Menlo,monospace;background:var(--bg)}
+table{border-collapse:separate;border-spacing:3px;width:100%;font-size:13px}
+td,th{padding:5px 8px;border-radius:5px;text-align:left;font-weight:400}
+th{color:var(--muted)}
+td{background:var(--card)}
+.bar{height:22px;border-radius:4px;display:flex;align-items:center;padding-left:8px;font-size:12px;transition:width .6s}
+.unit{border:1px solid var(--line);border-radius:10px;padding:8px 10px;min-width:118px;flex:1}
+.unit .t{font-weight:500}.unit .s{font-size:12px;color:var(--muted)}
+.foot{display:flex;justify-content:space-between;margin-top:22px}
+.foot button{font:inherit;font-size:14px;background:transparent;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:7px 14px;cursor:pointer}
+section{display:none}section.on{display:block}
+
+:root{--fp:#e1f5ee;--fp-s:#0f6e56;--fp-t:#085041;--ld:#eeedfe;--ld-s:#534ab7;--ld-t:#3c3489;--lg:#faeeda;--lg-s:#854f0b;--lg-t:#633806;--dv:#faece7;--dv-s:#993c1d;--dv-t:#712b13;--sv:#f1efe8;--sv-s:#5f5e5a;--sv-t:#444441}
+@media (prefers-color-scheme:dark){:root{--fp:#085041;--fp-s:#5dcaa5;--fp-t:#e1f5ee;--ld:#3c3489;--ld-s:#afa9ec;--ld-t:#eeedfe;--lg:#633806;--lg-s:#ef9f27;--lg-t:#faeeda;--dv:#712b13;--dv-s:#f0997b;--dv-t:#faece7;--sv:#444441;--sv-s:#b4b2a9;--sv-t:#f1efe8}}
+svg text{font-family:system-ui,-apple-system,sans-serif}svg .t{font-size:14px;font-weight:500}svg .s{font-size:12px}
+.fp rect{fill:var(--fp);stroke:var(--fp-s)}.fp text{fill:var(--fp-t)}.ld rect{fill:var(--ld);stroke:var(--ld-s)}.ld text{fill:var(--ld-t)}
+.lg rect{fill:var(--lg);stroke:var(--lg-s)}.lg text{fill:var(--lg-t)}.dv rect{fill:var(--dv);stroke:var(--dv-s)}.dv text{fill:var(--dv-t)}.sv rect{fill:var(--sv);stroke:var(--sv-s)}.sv text{fill:var(--sv-t)}
+.arr{stroke:var(--muted);stroke-width:1.2;fill:none}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:13px;color:var(--muted);margin:8px 0}.sw{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-1px;margin-right:5px;border:1px solid}
+pre{font:13px/1.5 ui-monospace,Menlo,monospace;background:var(--card);padding:10px 12px;border-radius:8px;overflow-x:auto;color:var(--fg)}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-top:12px}.card{background:var(--card);border-radius:8px;padding:10px 14px}.card div:first-child{font-size:13px;color:var(--muted)}.card div:last-child{font-size:21px;font-weight:500}
+#tl{display:grid;gap:2px;font-size:11px;align-items:center}
+</style>
+</head>
+<body><main>
+<h1>Sobel kernel, from scalar to SIMD</h1>
+<p>Part 2 of Canny on the Xeon Silver 4208. Go step by step; every step has a picture or animation.</p>
+<div class="nav" id="nav"></div>
+
+<!-- STEP 1 -->
+<section id="s0">
+<h2>1. The scalar loop: one pixel at a time</h2>
+<p>The loop visits pixels left to right, top to bottom. For each pixel it reads the 3×3 window around it, multiplies by the Sobel weights, and writes two outputs: <b>mag</b> (how strong the edge is) and <b>angle</b> (which way it points). Press play.</p>
+<div class="ctrl"><button id="p1">Play</button><button id="st1">Step</button><span class="mono" id="pos1" style="color:var(--muted)"></span></div>
+<div class="row">
+ <div>
+  <div class="mono" style="color:var(--muted);font-size:12px">blur (input)</div>
+  <div class="grid" id="img1"></div>
+  <div class="mono" style="color:var(--muted);font-size:12px;margin-top:10px">mag (output)</div>
+  <div class="grid" id="out1"></div>
+ </div>
+ <div class="panel">
+  <div class="mono" style="color:var(--muted)">3×3 window × Gx weights</div>
+  <div class="k" id="kx"></div>
+  <div class="mono" style="color:var(--muted)">3×3 window × Gy weights</div>
+  <div class="k" id="ky"></div>
+  <div class="mono" id="res1"></div>
+ </div>
+</div>
+</section>
+
+<!-- STEP 2 -->
+<section id="s1">
+<h2>2. What one pixel needs (the "independent operation")</h2>
+<p>The slides call one output with its chain of dependent instructions an <b>independent operation</b>. Every pixel is one; no pixel needs another pixel's result. Here is the chain for one pixel, after our two cleanups (no clamps inside the image, and the 4 direction bins instead of <code>atan2</code>):</p>
+<table>
+<tr><th>Step</th><th>Instructions</th><th>Kind of unit</th></tr>
+<tr><td>read 8 neighbours</td><td>8 loads</td><td>load unit</td></tr>
+<tr><td>gx = (tr−tl) + (br−bl) + 2(mr−ml)</td><td>3 sub, 1 add, 1 fma</td><td>FP unit</td></tr>
+<tr><td>gy = (bl−tl) + (br−tr) + 2(bm−tm)</td><td>3 sub, 1 add, 1 fma</td><td>FP unit</td></tr>
+<tr><td>gx² + gy²</td><td>1 mul, 1 fma</td><td>FP unit</td></tr>
+<tr><td>sqrt</td><td>1 sqrt</td><td>divider</td></tr>
+<tr><td>direction bin (replaces atan2)</td><td>2 mul, 3 compare + 7 logic/blend</td><td>FP unit + logic unit</td></tr>
+<tr><td>write mag, angle</td><td>2 stores</td><td>store unit</td></tr>
+</table>
+<p>So the kinds of unit this kernel needs: <b>FP unit</b> (add/sub/mul/fma/compare), <b>divider</b> (sqrt), <b>logic unit</b> (and/or/xor/blend), <b>load unit</b>, <b>store unit</b>.</p>
+</section>
+
+<!-- STEP 3 -->
+<section id="s2">
+<h2>3. What the Xeon has (and how many)</h2>
+<p>Each core has execution <b>ports</b>; a port is one functional unit that can start one new instruction every cycle (pipelined). The counts below are Cascade Lake values from uops.info / Agner Fog; your assignment-1 throughput benchmark is how you confirm them (throughput 2/cycle ⇒ 2 units).</p>
+<div class="row" id="ports" style="gap:10px"></div>
+<div id="portsTbl" style="margin-top:12px"></div>
+<p style="margin-top:12px">Key point: <b>add, sub, mul, fma and compare all share the same 2 FP units</b> (ports 0 and 1). The divider sits behind port 0. Latency of an FP instruction is <b>4 cycles</b>.</p>
+</section>
+
+<!-- STEP 4 -->
+<section id="s3">
+<h2>4. SIMD: 8 pixels per instruction</h2>
+<p>One AVX2 register holds 8 floats, so one instruction does the same step for <b>8 neighbouring pixels</b> (a "group"). Instead of reading neighbours one by one, we load 8 at a time, shifted by one column. Press play to watch group A's loads.</p>
+<div class="ctrl"><button id="p4">Play</button><span class="mono" id="lab4" style="color:var(--muted)"></span></div>
+<div class="grid" id="img4"></div>
+<div style="margin-top:10px" id="regs4"></div>
+<p>After the 8 loads, <code>gx = (tr−tl)+(br−bl)+2(mr−ml)</code> is <b>5 instructions for 8 pixels</b>, not 5 per pixel. Each lane (column) of the registers is one pixel.</p>
+</section>
+
+<!-- STEP 4b -->
+<section id="s3b">
+<h2 id="whole">5. The whole image: how the kernel sweeps the matrix</h2>
+<p>Zoom out to the whole image (here 66 columns × 8 rows; the real L1 test is 258 × 8). Each <b>iteration</b> computes 32 pixels of one row = groups A, B, C, D. It reads the 3 rows around that row (dashed box). Then it moves 32 columns right; at the end of the row it drops one row down. The outer ring (grey) has no full 3×3 window, so the scalar code does it.</p>
+<div class="ctrl"><button id="p5">Play</button><button id="st5">Step</button><span class="mono" id="lab5" style="color:var(--muted)"></span></div>
+<div style="overflow-x:auto"><div style="position:relative;display:inline-block" id="wrap5"><div class="grid" id="img5"></div><div id="band5" style="position:absolute;border:2px dashed var(--hot);border-radius:4px;pointer-events:none;transition:all .35s"></div></div></div>
+<div class="row" style="gap:14px;margin-top:10px;font-size:13px;color:var(--muted)">
+ <span><span style="display:inline-block;width:12px;height:12px;background:var(--teal);border:1px solid var(--teal-s);border-radius:2px;vertical-align:-1px"></span> group A / C</span>
+ <span><span style="display:inline-block;width:12px;height:12px;background:var(--pur);border:1px solid var(--pur-s);border-radius:2px;vertical-align:-1px"></span> group B / D</span>
+ <span><span style="display:inline-block;width:12px;height:12px;background:var(--line);border-radius:2px;vertical-align:-1px"></span> border · scalar code</span>
+ <span><span style="display:inline-block;width:12px;height:12px;border:2px dashed var(--hot);border-radius:2px;vertical-align:-2px"></span> rows read this iteration</span>
+</div>
+<div class="panel" style="margin-top:12px"><div class="mono" id="info5"></div></div>
+<p>Notice the overlap: row y is read as the "middle" row now, as the "top" row for row y+1 and as the "bottom" row for row y−1. Every input pixel is read 3 times, which is why it must stay in cache (L1) — the memory-layout part of the report.</p>
+</section>
+
+<!-- STEP FLOW -->
+<section id="sflow">
+<h2>6. Flowchart: which unit each step of the SIMD code uses</h2>
+<p>One group (8 pixels). Color = the functional unit that runs that step; the table adds them up.</p>
+<div class="legend">
+<span><span class="sw" style="background:var(--ld);border-color:var(--ld-s)"></span>load units (ports 2, 3)</span>
+<span><span class="sw" style="background:var(--fp);border-color:var(--fp-s)"></span>FP units (ports 0, 1)</span>
+<span><span class="sw" style="background:var(--lg);border-color:var(--lg-s)"></span>logic (ports 0, 1, 5)</span>
+<span><span class="sw" style="background:var(--dv);border-color:var(--dv-s)"></span>divider (behind port 0)</span>
+<span><span class="sw" style="background:var(--sv);border-color:var(--sv-s)"></span>store unit (port 4)</span>
+</div>
+<svg width="100%" viewBox="0 0 860 560" role="img" aria-label="Flowchart of the SIMD Sobel kernel colored by functional unit">
+<defs><marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5"/></marker></defs>
+<g class="ld"><rect x="230" y="20" width="400" height="58" rx="8"/><text class="t" x="430" y="43" text-anchor="middle">8 loads: tl tm tr · ml mr · bl bm br</text><text class="s" x="430" y="64" text-anchor="middle">8 × _mm256_loadu_ps · 2 per cycle → 4 cycles</text></g>
+<g class="fp"><rect x="60" y="120" width="330" height="58" rx="8"/><text class="t" x="225" y="143" text-anchor="middle">gx = (tr−tl) + (br−bl) + 2(mr−ml)</text><text class="s" x="225" y="164" text-anchor="middle">3 sub · 1 add · 1 fma = 5 FP</text></g>
+<g class="fp"><rect x="470" y="120" width="330" height="58" rx="8"/><text class="t" x="635" y="143" text-anchor="middle">gy = (bl−tl) + (br−tr) + 2(bm−tm)</text><text class="s" x="635" y="164" text-anchor="middle">3 sub · 1 add · 1 fma = 5 FP</text></g>
+<g class="fp"><rect x="60" y="222" width="250" height="58" rx="8"/><text class="t" x="185" y="245" text-anchor="middle">sum = gx·gx + gy·gy</text><text class="s" x="185" y="266" text-anchor="middle">1 mul · 1 fma = 2 FP</text></g>
+<g class="dv"><rect x="60" y="324" width="250" height="58" rx="8"/><text class="t" x="185" y="347" text-anchor="middle">mag = sqrt(sum)</text><text class="s" x="185" y="368" text-anchor="middle">1 vsqrtps · 6 cycles of divider</text></g>
+<g class="sv"><rect x="60" y="426" width="250" height="58" rx="8"/><text class="t" x="185" y="449" text-anchor="middle">store mag[x..x+7]</text><text class="s" x="185" y="470" text-anchor="middle">1 store</text></g>
+<g class="lg"><rect x="400" y="222" width="400" height="58" rx="8"/><text class="t" x="600" y="245" text-anchor="middle">|gx|, |gy| (clear sign bit) · sign = gx xor gy</text><text class="s" x="600" y="266" text-anchor="middle">2 andnot · 1 xor = 3 logic</text></g>
+<g class="fp"><rect x="400" y="324" width="400" height="58" rx="8"/><text class="t" x="600" y="347" text-anchor="middle">|gx|·tan22.5, |gy|·tan22.5 → 3 compares</text><text class="s" x="600" y="368" text-anchor="middle">2 mul · 3 cmp (horiz, vert, gy==0) = 5 FP</text></g>
+<g class="lg"><rect x="400" y="426" width="400" height="58" rx="8"/><text class="t" x="600" y="449" text-anchor="middle">pick bin: or · 2 blend · andnot → 0/45/90/135</text><text class="s" x="600" y="470" text-anchor="middle">1 or · 2 blendv (2 µops each) · 1 andnot = 6 µops</text></g>
+<g class="sv"><rect x="500" y="506" width="200" height="44" rx="8"/><text class="t" x="600" y="533" text-anchor="middle">store angle[x..x+7]</text></g>
+<path class="arr" d="M330 78 L225 118" marker-end="url(#a)"/><path class="arr" d="M530 78 L635 118" marker-end="url(#a)"/>
+<path class="arr" d="M185 178 L185 220" marker-end="url(#a)"/><path class="arr" d="M600 178 L360 220" marker-end="url(#a)"/>
+<path class="arr" d="M300 178 L520 220" marker-end="url(#a)"/><path class="arr" d="M680 178 L680 220" marker-end="url(#a)"/>
+<path class="arr" d="M185 280 L185 322" marker-end="url(#a)"/><path class="arr" d="M185 382 L185 424" marker-end="url(#a)"/>
+<path class="arr" d="M600 280 L600 322" marker-end="url(#a)"/><path class="arr" d="M600 382 L600 424" marker-end="url(#a)"/><path class="arr" d="M600 484 L600 504" marker-end="url(#a)"/>
+</svg>
+<table>
+<tr><th>Unit</th><th>Instructions per group</th><th>How many units</th><th>Cycles needed</th></tr>
+<tr><td>FP (ports 0, 1)</td><td>5 + 5 + 2 + 5 = 17, plus sqrt's issue slot = 18</td><td>2</td><td><b>9 ← bottleneck</b></td></tr>
+<tr><td>Logic (ports 0, 1, 5)</td><td>3 + 6 = 9 µops (shares ports 0/1 with FP)</td><td>3</td><td>(18 + 9) ÷ 3 = 9</td></tr>
+<tr><td>Divider</td><td>1 sqrt</td><td>1</td><td>6</td></tr>
+<tr><td>Loads</td><td>8</td><td>2</td><td>4</td></tr>
+<tr><td>Stores</td><td>2</td><td>1</td><td>2</td></tr>
+</table>
+</section>
+
+<!-- STEP 5 -->
+<section id="s4">
+<h2>7. Peak: which unit is the bottleneck?</h2>
+<p>Count the instructions for one group (8 pixels) per kind of unit, divide by how many of those units exist. That's how many cycles each unit needs. The <b>largest</b> one is the bottleneck, and that is the peak (best possible) speed — same method as assignment 2: units × 1 per cycle.</p>
+<div id="bars5"></div>
+<p style="margin-top:10px"><b>Peak = 9 cycles per 8 pixels ≈ 1.13 cycles/pixel</b> (0.89 pixels per cycle). Bottleneck: the 2 FP units. (Your current kernel uses more adds and blends: 25 cycles per 16 pixels ≈ 1.56 cycles/pixel.)</p>
+</section>
+
+<!-- STEP 6 -->
+<!-- STEP ASM -->
+<section id="sasm">
+<h2>8. Peak throughput, counted from the assembly</h2>
+<p><b>Throughput</b> = work finished per cycle. The 2 FP units can start at most <b>2 instructions per cycle</b> (lecture: units × 1 per cycle, pipelined) — that is the machine's instruction throughput. If one iteration needs X instructions on those units and makes P pixels, the kernel's <b>peak throughput</b> is <b>2 × P ÷ X pixels per cycle</b>. Multiply by the clock for pixels per second, and by FLOP per pixel for GFLOP/s. Fewer FP instructions per pixel ⇒ higher peak throughput.</p>
+<table>
+<tr><th>FP-unit instructions (compiled, clang -O3 -mavx2 -mfma)</th><th>Lean version</th><th>Your current kernel</th></tr>
+<tr><td>vsubps / vaddps</td><td>12 / 4</td><td>10 / 22</td></tr>
+<tr><td>vmulps / vfmadd</td><td>6 / 6</td><td>8 / 0</td></tr>
+<tr><td>vcmp…ps / vsqrtps</td><td>6 / 2</td><td>8 / 2</td></tr>
+<tr><td><b>Total per 16 pixels → per 8</b></td><td><b>36 → 18</b></td><td><b>50 → 25</b></td></tr>
+<tr><td><b>Peak throughput</b></td><td><b>0.89 px/cycle · 2.84 Gpx/s · ~51 GFLOP/s</b></td><td><b>0.64 px/cycle · 2.05 Gpx/s · ~41 GFLOP/s</b></td></tr><tr><td>Same thing as time per pixel</td><td>1.13 cycles/pixel</td><td>1.56 cycles/pixel</td></tr>
+</table>
+<h3 style="font-size:16px;font-weight:500;margin:18px 0 4px">Calculator: paste your counts from the Xeon</h3>
+<p>Run this on the Xeon and type the numbers it prints (instructions inside one loop iteration):</p>
+<pre>objdump -d --no-show-raw-insn build/CMakeFiles/sobel_kernel.dir/src/sobel_kernel.cpp.o | awk '/sobel_row_avx2/,/ret/' | awk '{print $2}' | grep -E '^v(add|sub|mul|fmadd|fnmadd|fmsub|cmp|sqrt)' | sort | uniq -c</pre>
+<div class="cards" id="calcIn" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr))"></div>
+<div class="cards">
+<div class="card"><div>FP instructions per iteration</div><div id="o_fp">–</div></div>
+<div class="card"><div>Peak throughput (pixels/cycle)</div><div id="o_th">–</div></div>
+<div class="card"><div>Peak throughput (per second)</div><div id="o_px">–</div></div>
+<div class="card"><div>Measured throughput vs peak</div><div id="o_pct">–</div></div>
+<div class="card"><div>Machine peak (units × lanes × 2 × GHz)</div><div id="o_mp">–</div></div>
+<div class="card"><div>Kernel peak GFLOP/s</div><div id="o_kp">–</div></div>
+<div class="card"><div>Measured GFLOP/s</div><div id="o_mg">–</div></div>
+</div>
+<div style="position:relative;background:var(--card);border-radius:6px;height:34px;margin:14px 0 4px" id="thbar">
+ <div id="thMeas" style="position:absolute;left:0;top:0;bottom:0;width:0;background:var(--teal);border-radius:6px;transition:width .4s"></div>
+ <div id="thLine" style="position:absolute;top:-6px;bottom:-6px;border-left:3px solid var(--hot)"></div>
+</div>
+<p style="font-size:13px">Measured throughput as a % of peak = peak cycles/pixel ÷ measured cycles/pixel. Bar = your measured cycles/pixel (shorter is better); orange line = the peak. You can get close to the line but never past it; if you do, the instruction count or the clock conversion is wrong.</p>
+</section>
+
+<section id="s5">
+<h2>9. Chains and kernel size: how many groups at once?</h2>
+<p>A <b>chain</b> is a sequence of instructions where each one needs the <b>result</b> of the previous one, so it cannot start until that result is ready (FP result = 4 cycles later). Instructions in <i>different</i> chains don't wait for each other, so they can run at the same time. Below is one group drawn as a dependency graph: each box sits at the cycle it can start at the earliest; an arrow means "needs that result". The longest path (orange) is the <b>critical path</b>.</p>
+<svg id="dag" width="100%" viewBox="0 0 860 330" role="img" aria-label="Dependency graph of one group with time on the x axis"></svg>
+<p>Read it like this: in cycles 0–3 there are 6 subtracts that don't depend on each other — plenty for 2 units. But after that the graph gets <b>narrow</b>: one add, then one fma, then one mul... each waiting 4 cycles. One group needs about <b id="cp">32</b> cycles from start to finish, while the 2 FP units could do its 18 FP instructions in 9. During those waits the units sit idle — unless <b>other groups</b> (independent chains) fill the gaps.</p>
+
+<h3 style="font-size:16px;font-weight:500;margin:18px 0 4px">Simulation: the 2 FP units with G groups in flight</h3>
+<p>This schedules the real graph above, cycle by cycle (FP latency 4, logic 1, blend 2, sqrt 12 with one every 6 cycles) for 256 pixels = 32 groups. <b>G = how many groups are in flight at once</b>: a new group may start only when the group G places before it has finished — that is what a kernel of G groups, software-pipelined (or the CPU's out-of-order engine), gives you. Each cell is one FP-unit slot; the letter is the group; amber = a logic op borrowing an FP port.</p>
+<div class="ctrl" id="simctrl"><button data-g="1">1 group</button><button data-g="2">2 groups</button><button data-g="3">3 groups</button><button data-g="4">4 groups</button><button data-g="6">6 groups</button><button data-g="8">8 groups</button></div>
+<div style="overflow-x:auto"><div id="tl"></div></div>
+<div class="cards">
+<div class="card"><div>Total cycles for 256 pixels</div><div id="c_tot">–</div></div>
+<div class="card"><div>Cycles per pixel</div><div id="c_cpp">–</div></div>
+<div class="card"><div>FP units busy</div><div id="c_util">–</div></div>
+<div class="card"><div>Peak (all busy)</div><div>1.13 c/px</div></div>
+</div>
+<p>Results (256 pixels): 1 group <b>4.38</b> cycles/pixel (FP 24% busy) → 2 groups <b>2.21</b> → 3 groups <b>1.63</b> → 4 groups <b>1.39</b> (77%) → 6 or 8 groups <b>1.30</b> (stops improving). One group leaves the units idle while it waits on its 33-cycle chain; each extra group fills those gaps. Rule of thumb from this: groups in flight ≈ critical path ÷ cycles one group needs at peak = 33 ÷ 9 ≈ <b>4</b>. So the kernel keeps <b>4 groups = 32 pixels</b> in flight. (The simulator's scheduling is simple, so it levels off at 1.30 rather than the 1.13 peak; the trend is what matters.)</p>
+
+</section>
+
+<!-- STEP 7 -->
+<section id="s6">
+<h2>10. Check it fits: registers and L1 cache</h2>
+<div class="row">
+ <div class="panel"><div class="t" style="font-weight:500">Registers: no spilling</div>
+  <div id="regbar"></div>
+  <p>AVX2 has 16 <code>ymm</code> registers. A <b>spill</b> is when the compiler runs out and parks a value on the stack (a store + later load). Plan so we never exceed 16 at any moment:</p>
+<table>
+<tr><th>Stage</th><th>What is live</th><th>Registers</th></tr>
+<tr><td>A. gx, gy for all 4 groups (interleaved A,B,C,D)</td><td>gx and gy accumulators × 4 groups = 8, plus ~1 temporary per group in flight = 4</td><td><b>12</b></td></tr>
+<tr><td>B. finish group A (mag, sqrt, bin, 2 stores)</td><td>gx, gy of B, C, D = 6 held; group A working set (gx, gy, sum, |gx|, |gy|, product, mask) ≈ 6</td><td><b>12</b></td></tr>
+<tr><td>C, D, E. finish B, then C, then D</td><td>fewer held each time</td><td>≤ 12</td></tr>
+<tr><td>Constants (2.0, tan22.5, sign mask, 45/90/135)</td><td>kept in memory and used as <b>memory operands</b>, e.g. <code>vmulps ymm, ymm, [tan22]</code> — they come from L1 via the load units, which have spare cycles (4 of 9)</td><td><b>0</b></td></tr>
+</table>
+<p><b>Max ≈ 12 of 16 → no spill</b>, with a few spare. Two coding rules make it work: use <code>t + t</code> instead of multiplying by a 2.0 constant (or let the fma read 2.0 from memory), and write group A's finishing code before group B's so the compiler doesn't keep everything alive at once. The CPU still overlaps the groups at run time because it renames registers internally (the Architecture slides: "logical registers vs physical registers" — 16 names, ~180 real registers).</p>
+<p><b>How to check you didn't spill</b> — no <code>ymm</code> stores/loads to the stack in the kernel loop:</p>
+<pre>objdump -d --no-show-raw-insn build/CMakeFiles/sobel_kernel.dir/src/sobel_kernel.cpp.o | awk '/sobel_row_avx2/,/ret/' | grep -E 'ymm.*\(%rsp\)|\(%rsp\).*ymm' | wc -l</pre>
+<p>It should print <code>0</code>. Build with <code>-O3 -mavx2 -mfma</code> (16 registers) so the result also holds on any AVX2 machine.</p>
+</div>
+ <div class="panel"><div class="t" style="font-weight:500">L1 cache (32 KB) for the peak test</div>
+  <p>blur + mag + angle = 12 bytes per pixel. Keep ≤ 24 KB ⇒ ~2,048 pixels.</p>
+  <div id="l1bar"></div>
+  <p>Use a wide, short image: <b>258 × 8</b> floats ≈ 24.2 KB, so each row gets 8 iterations of 32 pixels.</p></div>
+</div>
+<p><b>Summary:</b> FP units are the bottleneck → peak 1.13 cycles/pixel → one group's chain is 33 cycles, so ~4 groups must be in flight → 32 pixels per iteration → fits in 16 registers with no spill (max ~12) and the data fits in L1 → then measure on the Xeon and compare to the peak.</p>
+</section>
+
+<div class="foot"><button id="prev">← Back</button><button id="next">Next →</button></div>
+</main>
+<script>
+const steps=["Scalar loop","One pixel's needs","Machine units","SIMD groups","Whole image","Flowchart","Peak","Throughput","Chains + kernel size","Fit check"];
+let cur=0,timers=[];
+const stopAll=()=>{timers.forEach(clearInterval);timers=[]};
+const nav=document.getElementById("nav");
+steps.forEach((s,i)=>{const b=document.createElement("button");b.textContent=(i+1)+". "+s;b.onclick=()=>show(i);nav.appendChild(b)});
+function show(i){stopAll();cur=i;document.querySelectorAll("section").forEach((s,k)=>s.classList.toggle("on",k===i));
+ [...nav.children].forEach((b,k)=>b.classList.toggle("on",k===i));(inits[i]||(()=>{}))()}
+document.getElementById("prev").onclick=()=>show(Math.max(0,cur-1));
+document.getElementById("next").onclick=()=>show(Math.min(steps.length-1,cur+1));
+
+// shared image: an edge running down the middle
+const H=6,W=12,base=[60,60,62,70,90,170,198,200,200,200,198,190];
+const V=(r,c)=>Math.max(0,Math.min(255,base[c]+8*(r-2)));
+const shade=v=>`rgb(${v},${Math.round(v*.98)},${Math.round(v*.95)})`;
+const GX=[[-1,0,1],[-2,0,2],[-1,0,1]],GY=[[-1,-2,-1],[0,0,0],[1,2,1]];
+function bin(gx,gy){let d=Math.atan2(gy,gx)*180/Math.PI;if(d<0)d+=180;return d<22.5||d>=157.5?0:d<67.5?45:d<112.5?90:135}
+function mkGrid(el,rows,cols,size){el.innerHTML="";el.style.gridTemplateColumns=`repeat(${cols},${size}px)`;const cells=[];
+ for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){const d=document.createElement("div");d.className="px";d.style.width=d.style.height=size+"px";el.appendChild(d);cells.push(d)}return cells}
+
+// STEP 1
+let s1i=0;
+function init1(){const img=mkGrid(document.getElementById("img1"),H,W,34),out=mkGrid(document.getElementById("out1"),H,W,34);
+ img.forEach((d,k)=>{const r=Math.floor(k/W),c=k%W,v=V(r,c);d.style.background=shade(v);d.style.color=v>130?"#1f1e1d":"#f1efe8";d.textContent=v});
+ out.forEach(d=>{d.style.background="var(--card)"});
+ const order=[];for(let r=1;r<H-1;r++)for(let c=1;c<W-1;c++)order.push([r,c]);
+ s1i=0;const mags=[];
+ function step(){const [r,c]=order[s1i%order.length];if(s1i%order.length===0){out.forEach(d=>{d.style.background="var(--card)";d.textContent=""})}
+  img.forEach(d=>{d.style.outline="none";d.style.outlineOffset="0"});
+  for(let j=-1;j<=1;j++)for(let k=-1;k<=1;k++){const d=img[(r+j)*W+c+k];d.style.outline=(j||k)?"2px solid var(--amber-t)":"3px solid var(--hot)";d.style.outlineOffset="-2px"}
+  let gx=0,gy=0;const kx=document.getElementById("kx"),ky=document.getElementById("ky");kx.innerHTML=ky.innerHTML="";
+  for(let j=0;j<3;j++)for(let k=0;k<3;k++){const v=V(r+j-1,c+k-1);gx+=GX[j][k]*v;gy+=GY[j][k]*v;
+   const a=document.createElement("div");a.textContent=GX[j][k]?GX[j][k]+"×"+v:"·";a.style.color=GX[j][k]?"var(--fg)":"var(--muted)";kx.appendChild(a);
+   const b=document.createElement("div");b.textContent=GY[j][k]?GY[j][k]+"×"+v:"·";b.style.color=GY[j][k]?"var(--fg)":"var(--muted)";ky.appendChild(b)}
+  const m=Math.sqrt(gx*gx+gy*gy);
+  document.getElementById("res1").innerHTML=`gx = <b>${gx}</b><br>gy = <b>${gy}</b><br>mag = √(gx²+gy²) = <b>${m.toFixed(1)}</b><br>angle → bin <b>${bin(gx,gy)}°</b>`;
+  const o=out[r*W+c];const t=Math.min(1,m/600);o.style.background=`rgba(216,90,48,${(0.1+0.9*t).toFixed(2)})`;o.textContent=Math.round(m);o.style.color=t>.5?"#fff":"var(--fg)";
+  document.getElementById("pos1").textContent=`pixel (y=${r}, x=${c}) · pixel ${s1i%order.length+1} of ${order.length}`;s1i++}
+ step();
+ const pb=document.getElementById("p1");pb.textContent="Play";pb.classList.remove("on");
+ pb.onclick=()=>{if(timers.length){stopAll();pb.textContent="Play";pb.classList.remove("on")}else{timers.push(setInterval(step,650));pb.textContent="Pause";pb.classList.add("on")}};
+ document.getElementById("st1").onclick=step}
+
+// STEP 3
+function init3(){const P=[["Port 0","FP add/mul/fma/cmp + logic + sqrt divider","teal"],["Port 1","FP add/mul/fma/cmp + logic","teal"],["Port 5","logic, blend, shuffle (no FP math)","pur"],["Ports 2, 3","2 load units","pur"],["Port 4","1 store unit","pur"]];
+ const el=document.getElementById("ports");el.innerHTML="";P.forEach(([t,s,c])=>{const d=document.createElement("div");d.className="unit";d.style.background=`var(--${c})`;d.innerHTML=`<div class="t" style="color:var(--${c}-t)">${t}</div><div class="s" style="color:var(--${c}-t)">${s}</div>`;el.appendChild(d)});
+ document.getElementById("portsTbl").innerHTML=`<table><tr><th>Unit type</th><th>How many</th><th>Latency</th><th>New instructions / cycle</th></tr>
+ <tr><td>FP (add, sub, mul, fma, compare)</td><td><b>2</b></td><td>4 cycles</td><td>2</td></tr>
+ <tr><td>Divider (sqrt, 8 floats)</td><td>1</td><td>~12 cycles</td><td>1 every 6 cycles</td></tr>
+ <tr><td>Logic (and/or/xor)</td><td>3</td><td>1 cycle</td><td>3</td></tr>
+ <tr><td>Blend (vblendvps)</td><td>uses the 3 logic ports, 2 µops each</td><td>2 cycles</td><td>1.5</td></tr>
+ <tr><td>Load / store</td><td>2 / 1</td><td>~5 / –</td><td>2 / 1</td></tr></table>`}
+
+// STEP 4
+function init4(){const cols=12,rows=3;const img=mkGrid(document.getElementById("img4"),rows,cols,40);
+ img.forEach((d,k)=>{const r=Math.floor(k/cols),c=k%cols,v=V(r+1,c);d.style.background=shade(v);d.style.color=v>130?"#1f1e1d":"#f1efe8";d.textContent=v});
+ const loads=[["tl","row y−1",0,-1],["tm","row y−1",0,0],["tr","row y−1",0,1],["ml","row y",1,-1],["mr","row y",1,1],["bl","row y+1",2,-1],["bm","row y+1",2,0],["br","row y+1",2,1]];
+ const regs=document.getElementById("regs4");regs.innerHTML="";const rowsEl=[];
+ loads.forEach(([n,rl])=>{const w=document.createElement("div");w.style.display="flex";w.style.alignItems="center";w.style.gap="6px";w.style.margin="3px 0";
+  w.innerHTML=`<span class="mono" style="width:120px;color:var(--muted)">${n} · ${rl}</span>`;const cells=[];for(let l=0;l<8;l++){const c=document.createElement("div");c.className="px";c.style.width=c.style.height="30px";c.style.background="var(--card)";w.appendChild(c);cells.push(c)}regs.appendChild(w);rowsEl.push(cells)});
+ let k=0;const x0=2;
+ function step(){img.forEach(d=>{d.style.outline="none"});
+  for(let r=0;r<3;r++)for(let l=0;l<8;l++){const d=img[r*cols+x0+l];d.style.boxShadow=""}
+  if(k===loads.length){rowsEl.forEach(cs=>cs.forEach(c=>{c.style.background="var(--card)";c.textContent=""}));k=0;document.getElementById("lab4").textContent="";return}
+  const [n,rl,r,dx]=loads[k];for(let l=0;l<8;l++){const d=img[r*cols+x0+l+dx];d.style.outline="3px solid var(--hot)";d.style.outlineOffset="-2px";
+   const c=rowsEl[k][l];c.textContent=V(r+1,x0+l+dx);c.style.background="var(--teal)";c.style.color="var(--teal-t)"}
+  document.getElementById("lab4").textContent=`load ${n}: 8 floats from ${rl}, starting at column x${dx<0?"−1":dx>0?"+1":""}`;k++}
+ step();const pb=document.getElementById("p4");pb.textContent="Play";pb.classList.remove("on");
+ pb.onclick=()=>{if(timers.length){stopAll();pb.textContent="Play";pb.classList.remove("on")}else{timers.push(setInterval(step,900));pb.textContent="Pause";pb.classList.add("on")}}}
+
+// STEP 5
+function init5(){const U=[["FP units (2)","17 FP + 1 sqrt issue = 18 ÷ 2",9,true],["All 3 ALU ports","27 µops ÷ 3",9,false],["Divider","1 sqrt × 6 cycles",6,false],["Load units (2)","8 loads ÷ 2",4,false],["Store unit (1)","2 stores ÷ 1",2,false]];
+ const el=document.getElementById("bars5");el.innerHTML="";U.forEach(([n,how,cyc,hot])=>{const w=document.createElement("div");w.style.margin="8px 0";
+  w.innerHTML=`<div style="display:flex;justify-content:space-between;font-size:13px"><span>${n} <span style="color:var(--muted)">· ${how}</span></span><b>${cyc} cycles</b></div><div style="background:var(--card);border-radius:4px"><div class="bar" style="width:0;background:${hot?"var(--hot)":"var(--teal)"};color:${hot?"#fff":"var(--teal-t)"}">${hot?"bottleneck":""}</div></div>`;
+  el.appendChild(w);setTimeout(()=>{w.querySelector(".bar").style.width=(cyc/9*100)+"%"},60)})}
+
+// STEP 6
+function run6(groups){const names=[];for(let g=0;g<groups;g++){names.push("ABCD"[g]+"x");names.push("ABCD"[g]+"y")}
+ const ready=names.map(()=>0),C=16,u=[[],[]];let busy=0;
+ for(let c=0;c<C;c++){let used=0;for(let i=0;i<names.length&&used<2;i++)if(ready[i]<=c){u[used][c]=names[i];ready[i]=c+4;used++;busy++}}
+ const g=document.getElementById("tl6");g.innerHTML="";const add=(t,s)=>{const d=document.createElement("div");d.textContent=t;Object.assign(d.style,s||{});g.appendChild(d);return d};
+ add("cycle",{color:"var(--muted)"});for(let c=0;c<C;c++)add(c,{textAlign:"center",color:"var(--muted)"});
+ for(let k=0;k<2;k++){add("FP unit "+k,{color:"var(--muted)"});for(let c=0;c<C;c++){const v=u[k][c];const s={height:"30px",borderRadius:"4px",display:"flex",alignItems:"center",justifyContent:"center",opacity:0,transition:"opacity .3s"};
+  const d=v?add(v,Object.assign(s,{background:"ABCD".indexOf(v[0])%2?"var(--pur)":"var(--teal)",color:"ABCD".indexOf(v[0])%2?"var(--pur-t)":"var(--teal-t)"})):add("",Object.assign(s,{border:"1px dashed var(--line)"}));
+  setTimeout(()=>d.style.opacity=1,c*90)}}
+ document.getElementById("u6").textContent=`  FP units busy: ${Math.round(100*busy/(2*C))}%`;
+ ["g1","g2","g4"].forEach(id=>document.getElementById(id).classList.toggle("on",id==="g"+groups))}
+function init6(){["g1","g2","g4"].forEach(id=>document.getElementById(id).onclick=()=>run6(+id.slice(1)));run6(2)}
+
+// STEP 7
+function meter(el,val,max,mark,label){el.innerHTML=`<div style="position:relative;background:var(--card);border-radius:4px;height:24px;margin:6px 0"><div class="bar" style="width:0;background:var(--teal);color:var(--teal-t)">${label}</div><div style="position:absolute;left:${mark/max*100}%;top:-4px;bottom:-4px;border-left:2px dashed var(--hot)"></div></div>`;setTimeout(()=>el.querySelector(".bar").style.width=Math.min(100,val/max*100)+"%",60)}
+function init7(){meter(document.getElementById("regbar"),12,16,16,"≈12 live at most · end = 16 AVX2 registers");meter(document.getElementById("l1bar"),24.2,32,24,"24.2 KB used · dashed = 24 KB target · end = 32 KB")}
+
+// STEP 4b: whole-image sweep
+function init4b(){const WW=66,HH=8,CS=11,ST=13;const cells=mkGrid(document.getElementById("img5"),HH,WW,CS);
+ document.getElementById("img5").style.gap="2px";
+ const isBorder=(r,c)=>r===0||r===HH-1||c===0||c===WW-1;
+ const paintBase=()=>cells.forEach((d,k)=>{d.textContent="";d.style.borderRadius="2px";const r=Math.floor(k/WW),c=k%WW;d.style.outline="none";d.style.opacity=1;d.style.background=isBorder(r,c)?"var(--line)":"var(--card)"});
+ paintBase();
+ const its=[];for(let y=1;y<HH-1;y++)for(let x=1;x+32<=WW-1;x+=32)its.push([y,x]);
+ let k=0;const band=document.getElementById("band5");band.style.opacity=0;
+ const col=g=>g%2?"var(--pur)":"var(--teal)";const stroke=g=>g%2?"var(--pur-s)":"var(--teal-s)";
+ function step(){if(k===its.length){paintBase();k=0;band.style.opacity=0;document.getElementById("lab5").textContent="";document.getElementById("info5").textContent="Done — press Play / Step to sweep again.";return}
+  cells.forEach(d=>{d.style.outline="none"});
+  for(let j=0;j<k;j++){const [py,px]=its[j];for(let i=0;i<32;i++){const d=cells[py*WW+px+i];d.style.background=col(Math.floor(i/8));d.style.opacity=1;d.textContent="\u2713";d.style.fontSize="8px";d.style.color=Math.floor(i/8)%2?"var(--pur-t)":"var(--teal-t)"}}
+  const [y,x]=its[k];
+  for(let i=0;i<32;i++){const d=cells[y*WW+x+i];d.style.background=col(Math.floor(i/8));d.style.opacity=1;d.style.outline=`2px solid ${stroke(Math.floor(i/8))}`;d.style.outlineOffset="-1px"}
+  Object.assign(band.style,{opacity:1,left:((x-1)*ST-3)+"px",top:((y-1)*ST-3)+"px",width:(34*ST+2)+"px",height:(3*ST+2)+"px"});
+  document.getElementById("lab5").textContent=`iteration ${k+1} of ${its.length}`;
+  const g=["A","B","C","D"].map((n,i)=>`${n}: columns ${x+8*i}–${x+8*i+7}`).join("   ");
+  document.getElementById("info5").innerHTML=`writes row y=${y}, columns ${x}–${x+31} (32 pixels)<br>${g}<br>reads rows ${y-1}, ${y}, ${y+1}, columns ${x-1}–${x+32} (32 loads: 8 per group)`;
+  k++}
+ step();const pb=document.getElementById("p5");pb.textContent="Play";pb.classList.remove("on");
+ pb.onclick=()=>{if(timers.length){stopAll();pb.textContent="Play";pb.classList.remove("on")}else{timers.push(setInterval(step,800));pb.textContent="Pause";pb.classList.add("on")}};
+ document.getElementById("st5").onclick=step}
+
+// one group's dependency graph: [name, unit, latency, deps]
+const N=[["tr−tl","fp",4,[]],["br−bl","fp",4,[]],["mr−ml","fp",4,[]],["bl−tl","fp",4,[]],["br−tr","fp",4,[]],["bm−tm","fp",4,[]],
+["add₁","fp",4,[0,1]],["add₂","fp",4,[3,4]],["gx fma","fp",4,[2,6]],["gy fma","fp",4,[5,7]],
+["gy·gy","fp",4,[9]],["sum fma","fp",4,[8,10]],["sqrt","dv",12,[11]],["st mag","st",1,[12]],
+["|gx|","lg",1,[8]],["|gy|","lg",1,[9]],["xor","lg",1,[8,9]],["|gx|·t","fp",4,[14]],["|gy|·t","fp",4,[15]],
+["cmp h","fp",4,[15,17]],["cmp v","fp",4,[14,18]],["cmp 0","fp",4,[15]],["or","lg",1,[19,21]],["blend₁","lg",2,[16]],["blend₂","lg",2,[23,20]],["andnot","lg",1,[22,24]],["st ang","st",1,[25]]];
+const ES=[];N.forEach((n,i)=>{ES[i]=n[3].reduce((m,d)=>Math.max(m,ES[d]+N[d][2]),0)});
+const FIN=N.map((n,i)=>ES[i]+n[2]);const CP=Math.max(...FIN);document.getElementById("cp").textContent=CP;
+// critical path
+const onCP=new Set();(function mark(i){onCP.add(i);let best=-1;N[i][3].forEach(d=>{if(FIN[d]===ES[i]&&(best<0||FIN[d]>=FIN[best]))best=d});if(best>=0)mark(best)})(FIN.indexOf(CP));
+// draw DAG
+(function(){const svg=document.getElementById("dag"),NS="http://www.w3.org/2000/svg",X0=40,SC=(860-80)/CP,BW=58,BH=24;
+ const laneEnd=[];const pos=[];[...N.keys()].sort((a,b)=>ES[a]-ES[b]).forEach(i=>{const x=X0+ES[i]*SC;let l=0;while(laneEnd[l]!==undefined&&laneEnd[l]>x-6)l++;laneEnd[l]=x+BW;pos[i]=[x,24+l*30]});const H=24+laneEnd.length*30+30;svg.setAttribute("viewBox",`0 0 860 ${H+20}`);
+ const el=(t,a,p)=>{const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);(p||svg).appendChild(e);return e};
+ for(let c=0;c<=CP;c+=4){el("line",{x1:X0+c*SC,y1:14,x2:X0+c*SC,y2:H-10,stroke:"var(--line)","stroke-dasharray":"2 4"});const t=el("text",{x:X0+c*SC,y:H+8,"text-anchor":"middle",class:"s",fill:"var(--muted)"});t.textContent=c}
+ const tx=el("text",{x:850,y:H+8,"text-anchor":"end",class:"s",fill:"var(--muted)"});tx.textContent="cycle →";
+ N.forEach((n,i)=>n[3].forEach(d=>{const [x1,y1]=pos[d],[x2,y2]=pos[i];const hot=onCP.has(i)&&onCP.has(d);el("path",{d:`M${x1+BW} ${y1+BH/2} C${x1+BW+18} ${y1+BH/2},${x2-18} ${y2+BH/2},${x2} ${y2+BH/2}`,fill:"none",stroke:hot?"var(--hot)":"var(--line)","stroke-width":hot?2:1})}));
+ const cls={fp:"fp",lg:"lg",dv:"dv",st:"sv"};
+ N.forEach((n,i)=>{const g=el("g",{class:cls[n[1]]});const [x,y]=pos[i];el("rect",{x,y,width:BW,height:BH,rx:5,...(onCP.has(i)?{style:"stroke:var(--hot);stroke-width:2"}:{})},g);const t=el("text",{x:x+BW/2,y:y+16,"text-anchor":"middle",class:"s"},g);t.textContent=n[0]})})();
+// scheduler: G groups in flight (a new group may start when the group G places earlier is finished)
+function sim(G){const total=32,NN=N.length,L=total*NN,start=new Array(L).fill(-1),fin=new Array(total).fill(Infinity);
+ let t=0,left=L,divFree=0,fpBusy=0;const fpRows=[[],[]];
+ while(left>0){let fp=0,lg5=0;
+  for(let i=0;i<L;i++){if(start[i]>=0)continue;const g=Math.floor(i/NN),n=N[i%NN];
+   if(g>=G&&!(fin[g-G]<=t))continue;
+   if(!n[3].every(d=>{const j=g*NN+d;return start[j]>=0&&start[j]+N[d][2]<=t}))continue;
+   if(n[1]==="fp"&&fp<2){fpRows[fp][t]=g;fp++;fpBusy++;start[i]=t;left--}
+   else if(n[1]==="dv"&&divFree<=t&&fp<2){fpRows[fp][t]=g;fp++;start[i]=t;divFree=t+6;left--}
+   else if(n[1]==="lg"){if(lg5<1){lg5++;start[i]=t;left--}else if(fp<2){fpRows[fp][t]=-1;fp++;start[i]=t;left--}}
+   else if(n[1]==="st"){start[i]=t;left--}}
+  for(let g=0;g<total;g++)if(fin[g]===Infinity){let done=true,e=0;for(let k=0;k<NN;k++){const s=start[g*NN+k];if(s<0){done=false;break}e=Math.max(e,s+N[k][2])}if(done)fin[g]=e}
+  t++}
+ return {t:Math.max(...fin),fpRows,fpBusy,px:total*8}}
+function showSim(G){document.querySelectorAll("#simctrl button").forEach(b=>b.classList.toggle("on",+b.dataset.g===G));
+ const r=sim(G),C=Math.min(r.t,72),el=document.getElementById("tl");el.style.gridTemplateColumns=`64px repeat(${C},14px)`;el.innerHTML="";
+ const add=(txt,st)=>{const d=document.createElement("div");d.textContent=txt;Object.assign(d.style,st||{});el.appendChild(d)};
+ add("cycle",{color:"var(--muted)"});for(let c=0;c<C;c++)add(c%8===0?c:"",{color:"var(--muted)"});
+ for(let u=0;u<2;u++){add("FP unit "+u,{color:"var(--muted)"});for(let c=0;c<C;c++){const v=r.fpRows[u][c];const has=v!==undefined;const g=has&&v>=0?v:-1;
+  add(g>=0?String.fromCharCode(65+g%26):"",{height:"22px",borderRadius:"3px",textAlign:"center",lineHeight:"22px",background:has?(g<0?"var(--lg)":(g%2?"var(--ld)":"var(--fp)")):"transparent",color:g%2?"var(--ld-t)":"var(--fp-t)",border:has?"none":"1px dashed var(--line)"})}}
+ document.getElementById("c_tot").textContent=r.t+(r.t>72?" (first 72 shown)":"");
+ document.getElementById("c_cpp").textContent=(r.t/r.px).toFixed(2);
+ document.getElementById("c_util").textContent=Math.round(100*r.fpBusy/(2*r.t))+"%"}
+document.querySelectorAll("#simctrl button").forEach(b=>b.onclick=()=>showSim(+b.dataset.g));
+function initChain(){showSim(4)}
+function initCalc(){const F=[["vaddps",4],["vsubps",12],["vmulps",6],["vfmadd (all fma forms)",6],["vcmp…ps",6],["vsqrtps",2],["pixels per iteration",16],["FP units",2],["clock GHz",3.2],["measured cycles/pixel",""],["FLOP per pixel",18],["SIMD lanes (floats)",8]];
+ const box=document.getElementById("calcIn");if(!box.children.length){F.forEach(([n,v],i)=>{const d=document.createElement("label");d.className="card";d.innerHTML=`<div>${n}</div><input id="ci${i}" type="number" step="any" value="${v}" style="width:100%;font:inherit;font-size:18px;background:transparent;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:2px 6px">`;box.appendChild(d);d.querySelector("input").oninput=calcRun})}
+ calcRun()}
+function calcRun(){const v=i=>parseFloat(document.getElementById("ci"+i).value);
+ const fp=v(0)+v(1)+v(2)+v(3)+v(4)+v(5),px=v(6),units=v(7),ghz=v(8),meas=v(9),fpp=v(10),lanes=v(11);
+ const err=!(fp>0&&px>0&&units>0&&ghz>0);
+ if(err){["o_fp","o_th","o_px","o_pct"].forEach(id=>document.getElementById(id).textContent="check inputs");return}
+ const th=fp/units/px;document.getElementById("o_fp").textContent=fp;document.getElementById("o_th").textContent=(1/th).toFixed(2)+" px/cyc";
+ document.getElementById("o_px").textContent=(ghz/th).toFixed(2)+" Gpx/s";
+ const mp=units*lanes*2*ghz;document.getElementById("o_mp").textContent=mp.toFixed(1)+" GFLOP/s";
+ const kp=fpp/th*ghz;document.getElementById("o_kp").textContent=kp.toFixed(1)+" ("+Math.round(100*kp/mp)+"% of machine)";
+ document.getElementById("o_mg").textContent=(isFinite(meas)&&meas>0)?(fpp/meas*ghz).toFixed(1)+" ("+Math.round(100*fpp/meas*ghz/mp)+"% of machine)":"enter measurement";
+ const max=Math.max(th*2.2,isFinite(meas)?meas*1.1:0);document.getElementById("thLine").style.left=(th/max*100)+"%";
+ if(isFinite(meas)&&meas>0){document.getElementById("thMeas").style.width=(meas/max*100)+"%";
+  document.getElementById("o_pct").textContent=meas<th?"above peak?! check":Math.round(100*th/meas)+"% of peak"}
+ else{document.getElementById("thMeas").style.width="0";document.getElementById("o_pct").textContent="enter measurement"}}
+const inits=[init1,null,init3,init4,init4b,null,init5,initCalc,initChain,init7];
+show(0);
+</script>
+</body></html>

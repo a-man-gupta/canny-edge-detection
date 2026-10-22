@@ -1,4 +1,6 @@
 // Sobel kernel against the scalar atan2 reference in canny_scalar.cpp.
+// v2 (sobel_kernel_v2) must give exactly the same mag and angle as v1 on whole-number
+// images, the only kind the pipeline produces (its blur is rounded to 0..255).
 // Magnitude must match. Direction uses the OpenCV sector test, so category,
 // NMS, and edge differences near the 22.5 and 67.5 degree boundaries are counted
 // and printed. They are not a failed build.
@@ -144,6 +146,21 @@ static bool check_image(int w, int h, const std::vector<float>& blur, const char
     return true;
 }
 
+// v2 against v1, bit for bit, for every group count. Only for whole-number images.
+static void check_v2(int w, int h, const std::vector<float>& blur, const char* name) {
+    size_t n = size_t(w) * h;
+    std::vector<float> mag1(n), angle1(n), mag2(n), angle2(n);
+    sobel_kernel(w, h, blur.data(), mag1.data(), angle1.data());
+    for (int groups : {1, 2, 4, 8}) {
+        sobel_kernel_v2(w, h, blur.data(), mag2.data(), angle2.data(), groups);
+        if (std::memcmp(mag1.data(), mag2.data(), n * sizeof(float)) != 0 ||
+            std::memcmp(angle1.data(), angle2.data(), n * sizeof(float)) != 0) {
+            fail(std::string(name) + " v2 differs from v1 (groups " + std::to_string(groups) + ")");
+            return;
+        }
+    }
+}
+
 static void fill_pattern(std::vector<float>& blur, int w, int h, int pattern) {
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
@@ -195,7 +212,19 @@ int main() {
                 char name[64];
                 std::snprintf(name, sizeof(name), "%dx%d pattern %d", w, h, pattern);
                 check_image(w, h, blur, name);
+                check_v2(w, h, blur, name);
             }
+        }
+    }
+    // Wider images so v2 runs its 4- and 8-group loops, not only the single-group tail.
+    for (int w : {65, 100, 131, 258}) {
+        for (int pattern : patterns) {
+            std::vector<float> blur(size_t(w) * 9);
+            fill_pattern(blur, w, 9, pattern);
+            char name[64];
+            std::snprintf(name, sizeof(name), "%dx9 pattern %d", w, pattern);
+            check_image(w, 9, blur, name);
+            check_v2(w, 9, blur, name);
         }
     }
 
@@ -213,6 +242,7 @@ int main() {
         char name[64];
         std::snprintf(name, sizeof(name), "random %dx%d", w, h);
         check_image(w, h, blur, name);
+        check_v2(w, h, blur, name);
     }
 
     for (float fill : {0.f, -0.f}) {

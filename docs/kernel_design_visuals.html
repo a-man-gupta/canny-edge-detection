@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sobel kernel design</title>
+<style>
+:root{--bg:#faf9f5;--fg:#1f1e1d;--muted:#6b6a65;--line:#d3d1c7;--card:#f1efe8;--teal:#e1f5ee;--teal-s:#0f6e56;--teal-t:#085041;--pur:#eeedfe;--pur-s:#534ab7;--pur-t:#3c3489;--cell:#ffffff}
+@media (prefers-color-scheme:dark){:root{--bg:#1f1e1d;--fg:#f1efe8;--muted:#b4b2a9;--line:#5f5e5a;--card:#2c2c2a;--teal:#085041;--teal-s:#5dcaa5;--teal-t:#e1f5ee;--pur:#3c3489;--pur-s:#afa9ec;--pur-t:#eeedfe;--cell:#2c2c2a}}
+body{background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,sans-serif;margin:0;padding:24px 16px}
+main{max-width:760px;margin:0 auto}
+h1{font-size:22px;font-weight:500;margin:0 0 4px}h2{font-size:18px;font-weight:500;margin:32px 0 8px}
+p,li{color:var(--muted);font-size:15px}
+svg text{fill:var(--fg);font-family:system-ui,-apple-system,sans-serif}
+.s{font-size:12px;fill:var(--muted)}.h{font-size:14px;font-weight:500}
+.cell{fill:var(--cell);stroke:var(--line);stroke-width:.5}
+.gt{fill:var(--teal);stroke:var(--teal-s);stroke-width:.5}.gp{fill:var(--pur);stroke:var(--pur-s);stroke-width:.5}
+.btns{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 12px}
+button{font:inherit;font-size:14px;background:transparent;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:6px 12px;cursor:pointer}
+button.on{border:2px solid var(--teal-s)}
+#grid{display:grid;grid-template-columns:72px repeat(16,minmax(0,1fr));gap:3px;font-size:12px;align-items:center}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-top:16px}
+.card{background:var(--card);border-radius:8px;padding:10px 14px}.card div:first-child{font-size:13px;color:var(--muted)}.card div:last-child{font-size:22px;font-weight:500}
+ol li{margin:4px 0}
+</style>
+</head>
+<body><main>
+<h1>Sobel kernel design (Part 2)</h1>
+<p>Xeon Silver 4208, AVX2. Pixel groups, the slides' kernel-design steps, and why we need 4 groups.</p>
+
+<h2>1. Pixel groups</h2>
+<svg width="100%" viewBox="0 0 680 410" role="img" aria-label="32 output pixels split into 4 groups of 8; group A's three shifted loads">
+<text class="h" x="52" y="40">One kernel iteration: 32 output pixels = 4 groups × 8</text>
+<rect class="gt" x="48" y="56" width="142" height="44" rx="6"/><rect class="gp" x="192" y="56" width="142" height="44" rx="6"/>
+<rect class="gt" x="336" y="56" width="142" height="44" rx="6"/><rect class="gp" x="480" y="56" width="142" height="44" rx="6"/>
+<g id="cells"></g>
+<text class="s" x="119" y="120" text-anchor="middle">Group A · x..x+7</text>
+<text class="s" x="263" y="120" text-anchor="middle">Group B · x+8..x+15</text>
+<text class="s" x="407" y="120" text-anchor="middle">Group C · x+16..x+23</text>
+<text class="s" x="551" y="120" text-anchor="middle">Group D · x+24..x+31</text>
+<text class="s" x="340" y="146" text-anchor="middle">Each group = 1 ymm register = 8 pixels computed by one instruction</text>
+<text class="h" x="52" y="196">Zoom on group A: one input row, three shifted loads</text>
+<g id="zoom"></g>
+<rect class="gt" x="120" y="254" width="348" height="26" rx="4"/><text class="s" x="294" y="271" text-anchor="middle">load at x−1 → left neighbours of all 8</text>
+<rect class="cell" x="164" y="288" width="348" height="26" rx="4"/><text class="s" x="338" y="305" text-anchor="middle">load at x → centre column (top/bottom rows)</text>
+<rect class="gt" x="208" y="322" width="348" height="26" rx="4"/><text class="s" x="382" y="339" text-anchor="middle">load at x+1 → right neighbours of all 8</text>
+<text class="s" x="340" y="376" text-anchor="middle">Same on rows y−1, y, y+1 → 8 loads per group (middle row's centre unused)</text>
+<text class="s" x="340" y="398" text-anchor="middle">From these, each group builds 2 independent chains: gx and gy</text>
+</svg>
+
+<h2>2. How the slides design a kernel</h2>
+<ol>
+<li><b>Core computation</b> — 3×3 Sobel per pixel.</li>
+<li><b>Independent operation</b> — one output = a chain of dependent instructions (one pixel's gx/gy → mag, bin).</li>
+<li><b>Hardware</b> — latency L, number of units N, SIMD width v: 2 FP units, L = 4, v = 8.</li>
+<li><b>Peak</b> — every unit busy every cycle; busiest unit: 18 FP instructions ÷ 2 units = 9 cycles per 8 pixels ≈ 1.13 cycles/pixel.</li>
+<li><b>Independent instructions needed</b> — L × N = 4 × 2 = 8.</li>
+<li><b>Size the kernel</b> — 2 chains per group → 4 groups (32 pixels); check it fits the registers.</li>
+<li><b>Feed it</b> — data layout and caches (all in L1 for the peak test), then reuse the kernel.</li>
+</ol>
+
+<h2>3. Why 4 groups: the 2 FP units, cycle by cycle</h2>
+<div class="btns">
+<button id="b1" onclick="run(1)">1 group · 2 chains</button>
+<button id="b2" onclick="run(2)">2 groups · 4 chains (current kernel)</button>
+<button id="b4" onclick="run(4)">4 groups · 8 chains</button>
+</div>
+<div id="grid"></div>
+<div class="cards">
+<div class="card"><div>FP unit utilization</div><div id="util">–</div></div>
+<div class="card"><div>Independent chains</div><div id="ch">–</div></div>
+<div class="card"><div>Needed: L × N</div><div>4 × 2 = 8</div></div>
+</div>
+<p>Each cell is one cycle. A chain's next instruction can start only 4 cycles after its previous one. This is the slides' simplified model; the real CPU also overlaps loop iterations, so the current kernel does better than shown (about 83% of its peak in the LLVM model).</p>
+
+<h2 id="matrix">4. The same thing as a matrix</h2>
+<p>The image is a matrix: rows y, columns x. One iteration writes 32 pixels of row y (colored by group) and reads rows y−1, y, y+1 from column x−1 to x+32 (outlined band). Pick a group and a lane to see that pixel's 3×3 window.</p>
+<div class="btns" id="gbtns"></div>
+<div style="display:flex;align-items:center;gap:12px;font-size:14px;color:var(--muted);margin-bottom:8px">
+<span>Lane</span><input type="range" id="lane" min="0" max="7" step="1" value="3" style="flex:1"><span id="lanev" style="min-width:110px"></span>
+</div>
+<svg id="mat" width="100%" viewBox="0 0 680 190" role="img" aria-label="Image matrix with the 4 pixel groups on row y and the selected pixel's 3 by 3 window"></svg>
+<p style="margin-top:4px">Below: the 8 registers this group loads. Each row is one <code>_mm256_loadu_ps</code>, each column is one lane (one output pixel); the cell shows which image column that lane reads. The highlighted column is the selected pixel — its 8 cells are exactly its 3×3 window minus the centre.</p>
+<div style="overflow-x:auto"><table id="regs" style="border-collapse:separate;border-spacing:3px;font-size:12px;width:100%;table-layout:fixed"></table></div>
+<p>Then <code>gx</code> = −tl + tr − 2·ml + 2·mr − bl + br and <code>gy</code> = −tl − 2·tm − tr + bl + 2·bm + br, lane by lane — 8 pixels per instruction.</p>
+</main>
+<script>
+const NS="http://www.w3.org/2000/svg";
+function r(p,x,y,w,h,cls,rx){const e=document.createElementNS(NS,"rect");Object.entries({x,y,width:w,height:h,rx:rx||2}).forEach(([k,v])=>e.setAttribute(k,v));e.setAttribute("class",cls);p.appendChild(e);return e}
+function t(p,x,y,s,cls){const e=document.createElementNS(NS,"text");e.setAttribute("x",x);e.setAttribute("y",y);e.setAttribute("text-anchor","middle");e.setAttribute("class",cls);e.textContent=s;p.appendChild(e)}
+const cg=document.getElementById("cells");
+for(let g=0;g<4;g++)for(let i=0;i<8;i++)r(cg,54+g*144+i*16,66,14,24,"cell");
+const zg=document.getElementById("zoom");const lab=["x−1","x","x+1","x+2","x+3","x+4","x+5","x+6","x+7","x+8"];
+lab.forEach((s,i)=>{r(zg,120+i*44,212,40,30,"cell",3);t(zg,140+i*44,231,s,"s")});
+function run(groups){
+  const names=[];const gl="ABCD";
+  for(let g=0;g<groups;g++){names.push(gl[g]+"x");names.push(gl[g]+"y")}
+  const ready=names.map(()=>0),C=16,units=[[],[]];let busy=0;
+  for(let c=0;c<C;c++){let used=0;for(let i=0;i<names.length&&used<2;i++){if(ready[i]<=c){units[used][c]=names[i];ready[i]=c+4;used++;busy++}}}
+  const g=document.getElementById("grid");g.innerHTML="";
+  const add=(txt,st)=>{const d=document.createElement("div");d.textContent=txt;Object.assign(d.style,st||{});g.appendChild(d);return d};
+  add("cycle",{color:"var(--muted)"});for(let c=0;c<C;c++)add(c,{textAlign:"center",color:"var(--muted)"});
+  for(let u=0;u<2;u++){add("FP unit "+u,{color:"var(--muted)"});
+    for(let c=0;c<C;c++){const v=units[u][c];const base={height:"30px",borderRadius:"4px",display:"flex",alignItems:"center",justifyContent:"center"};
+      if(v){const p=(v.charCodeAt(0)-65)%2===1;add(v,Object.assign(base,{background:p?"var(--pur)":"var(--teal)",color:p?"var(--pur-t)":"var(--teal-t)"}))}
+      else add("",Object.assign(base,{border:"1px dashed var(--line)"}))}}
+  document.getElementById("util").textContent=Math.round(100*busy/(2*C))+"%";
+  document.getElementById("ch").textContent=names.length;
+  ["b1","b2","b4"].forEach(id=>document.getElementById(id).classList.toggle("on",id==="b"+groups));
+}
+run(2);
+
+let G=0;const gnames="ABCD";
+const gb=document.getElementById("gbtns");
+for(let g=0;g<4;g++){const b=document.createElement("button");b.textContent="Group "+gnames[g];b.onclick=()=>{G=g;draw()};b.id="gb"+g;gb.appendChild(b)}
+document.getElementById("lane").oninput=draw;
+const off=(k)=>k===0?"x":(k>0?"x+"+k:"x−"+(-k));
+function draw(){
+  const L=+document.getElementById("lane").value;const px=G*8+L;
+  document.getElementById("lanev").textContent="pixel ("+"y, "+off(px)+")";
+  for(let g=0;g<4;g++)document.getElementById("gb"+g).classList.toggle("on",g===G);
+  const svg=document.getElementById("mat");svg.innerHTML="";
+  const X0=70,Y0=30,CW=17,CH=24,cols=34,rows=5;
+  const rl=["y−2","y−1","y","y+1","y+2"];
+  t(svg,X0+CW*0.5,18,"x−1","s");t(svg,X0+CW*1.5+CW*15,18,off(16),"s");t(svg,X0+CW*33.5,18,"x+32","s");t(svg,X0+CW*1.5,18,"x","s");
+  for(let ri=0;ri<rows;ri++){
+    const lt=document.createElementNS(NS,"text");lt.setAttribute("x",X0-10);lt.setAttribute("y",Y0+ri*CH+16);lt.setAttribute("text-anchor","end");lt.setAttribute("class","s");lt.textContent=rl[ri];svg.appendChild(lt);
+    for(let c=0;c<cols;c++){
+      let cls="cell";
+      if(ri===2&&c>=1&&c<=32){const g=Math.floor((c-1)/8);cls=g%2?"gp":"gt";}
+      const e=r(svg,X0+c*CW,Y0+ri*CH,CW-2,CH-2,cls,2);
+      if(ri===2&&c>=1&&c<=32&&Math.floor((c-1)/8)!==G)e.setAttribute("opacity","0.45");
+    }
+  }
+  const band=r(svg,X0-2,Y0+CH-2,cols*CW+2,3*CH+2,"",3);band.setAttribute("fill","none");band.setAttribute("stroke","var(--muted)");band.setAttribute("stroke-dasharray","4 3");
+  const cx=X0+(px+1)*CW, win=r(svg,cx-CW-2,Y0+CH-2,3*CW+2,3*CH+2,"",3);win.setAttribute("fill","none");win.setAttribute("stroke","#d85a30");win.setAttribute("stroke-width","2.5");
+  const ct=document.createElementNS(NS,"circle");ct.setAttribute("cx",cx+CW/2-1);ct.setAttribute("cy",Y0+2*CH+11);ct.setAttribute("r",3);ct.setAttribute("fill","#d85a30");svg.appendChild(ct);
+  t(svg,340,Y0+rows*CH+28,"Dashed band = rows read · colored = row y written by groups A–D · orange = 3×3 window of the selected pixel","s");
+  const loads=[["tl","y−1",-1],["tm","y−1",0],["tr","y−1",1],["ml","y",-1],["mr","y",1],["bl","y+1",-1],["bm","y+1",0],["br","y+1",1]];
+  const tb=document.getElementById("regs");tb.innerHTML="";
+  const hr=tb.insertRow();const h0=hr.insertCell();h0.textContent="register";h0.style.color="var(--muted)";h0.style.width="120px";
+  for(let l=0;l<8;l++){const c=hr.insertCell();c.textContent="lane "+l;c.style.textAlign="center";c.style.color="var(--muted)"}
+  loads.forEach(([n,row,d])=>{const tr=tb.insertRow();const c0=tr.insertCell();c0.textContent=n+" · row "+row;c0.style.color="var(--muted)";
+    for(let l=0;l<8;l++){const c=tr.insertCell();c.textContent=off(G*8+l+d);
+      Object.assign(c.style,{textAlign:"center",padding:"4px 0",borderRadius:"4px",background:l===L?"#d85a30":(G%2?"var(--pur)":"var(--teal)"),color:l===L?"#fff":(G%2?"var(--pur-t)":"var(--teal-t)")})}});
+}
+draw();
+</script>
+</body></html>

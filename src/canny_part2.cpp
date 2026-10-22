@@ -1,8 +1,9 @@
-// Part 2 driver. Same pipeline as canny_scalar.cpp, except Sobel calls sobel_kernel.
-// canny_scalar.cpp stays the inline scalar reference. Parts 1, 3, 4, and 5 are unchanged.
+// Part 2 pipeline. Same as canny_scalar.cpp, except Sobel calls the AVX2 kernel
+// (--kernel v1 or v2, default v2). Parts 1, 3, 4, and 5 are unchanged.
+// Prints the same millisecond JSON as canny_scalar, so benchmarks/run.py can time it.
+// Cycle counts and peak comparisons for the kernel are in sobel_driver.cpp.
 #include "hysteresis.hpp"
 #include "sobel_kernel.hpp"
-#include "stages_dump.hpp"
 
 #include <algorithm>
 #include <array>
@@ -10,37 +11,12 @@
 #include <cmath>
 #include <cstdint>
 #include <fstream>
-#include <iomanip>
 #include <iostream>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 using Clock = std::chrono::steady_clock;
-
-// Same RDTSC read as the 18-645 benchmarking lab and the kernel-design driver:
-//   private/18645/benchmarking_starter/latency/latency_simd_fma.c
-//   private/18645/KernelDesignTemplate/kernel_driver.c
-// TSC ticks are scaled by MAX_FREQ/BASE_FREQ, the constants those files use.
-static constexpr double MAX_FREQ = 3.4;
-static constexpr double BASE_FREQ = 2.4;
-// Peak of that kernel-design measurement. kernel_driver.c prints flops/cycle for
-// a 6x8 double FMA kernel; 2 FMA ports * 4 doubles * 2 flops = 16. The same two
-// ports issue 2 * 8 single-precision adds per cycle, which is also 16 flops/cycle.
-static constexpr double PEAK_FLOPS_PER_CYCLE = 16.0;
-// Floating-point ops in sobel_kernel per pixel, counted the way kernel_driver.c
-// counts 2*m*n*k (one flop per add, subtract, or multiply; an FMA would be two).
-// gx is 8, gy is 8, magnitude is 2 multiplies + 1 add + 1 sqrt, angle is atan2 +
-// 1 multiply + 1 divide. The conditional +180 is not counted.
-static constexpr double SOBEL_FLOPS_PER_PIXEL = 23.0;
-static constexpr double THRESHOLD_FLOPS_PER_CYCLE = PEAK_FLOPS_PER_CYCLE;
-static constexpr double THRESHOLD_CYCLES_PER_PIXEL = SOBEL_FLOPS_PER_PIXEL / PEAK_FLOPS_PER_CYCLE;
-
-static inline unsigned long long rdtsc(void) {
-    unsigned hi, lo;
-    __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
-    return (static_cast<unsigned long long>(lo)) | (static_cast<unsigned long long>(hi) << 32);
-}
 
 // Elapsed time in milliseconds between two clock readings.
 static double ms(Clock::time_point a, Clock::time_point b) {
@@ -55,7 +31,7 @@ static std::string token(std::istream& in) {
 }
 
 int main(int argc, char** argv) try {
-    std::string input, output, stages_dump;
+    std::string input, output, kernel="v2";
     int iterations=100, warmup=10; float low=50, high=100, sigma=1.4f;
 
     // Read options: input, output, how many runs to time, and Canny parameters.
@@ -63,14 +39,15 @@ int main(int argc, char** argv) try {
         if(a+1==argc) throw std::runtime_error("Missing option value");
         std::string k=argv[a], v=argv[a+1];
         if(k=="--input") input=v; else if(k=="--output") output=v;
-        else if(k=="--stages-dump") stages_dump=v;
+        else if(k=="--kernel") kernel=v;
         else if(k=="--iterations") iterations=std::stoi(v);
         else if(k=="--warmup") warmup=std::stoi(v);
         else if(k=="--low") low=std::stof(v); else if(k=="--high") high=std::stof(v);
         else if(k=="--sigma") sigma=std::stof(v); else throw std::runtime_error("Unknown option "+k);
     }
     if(iterations<1 || warmup<0 || !std::isfinite(sigma) || sigma<=0 ||
-       !std::isfinite(low) || !std::isfinite(high) || low<0 || high<=low)
+       !std::isfinite(low) || !std::isfinite(high) || low<0 || high<=low ||
+       (kernel!="v1" && kernel!="v2"))
         throw std::runtime_error("Invalid iteration count or parameters");
 
     // Read image: binary P5 grayscale PGM, at least 5x5, into one uint8 buffer.
@@ -102,16 +79,7 @@ int main(int argc, char** argv) try {
     };
 
     // Timed loop. Negative iterations are warmup and are not recorded.
-    // ms[] is the steady_clock stage split. The four Sobel fields are the lab clock.
-    struct Sample {
-        std::array<double, 6> ms;
-        double rdtsc_cycles;
-        double turbo_cycles;
-        double cycles_per_pixel;
-        double flops_per_cycle;
-    };
-    std::vector<Sample> samples;
-    const double pixels = double(w) * double(h);
+    std::vector<std::array<double,6>> samples;
     for(int it=-warmup;it<iterations;++it) {
         std::array<Clock::time_point,6> t; t[0]=Clock::now();
 
@@ -126,19 +94,12 @@ int main(int argc, char** argv) try {
         }
         t[1]=Clock::now();
 
-        // Part 2 kernel start. Reads blur. Writes mag and angle.
-        // RDTSC wraps only this call. Milliseconds below still use steady_clock.
-        unsigned long long c0 = rdtsc();
-        sobel_kernel(w, h, blur.data(), mag.data(), angle.data());
-        unsigned long long c1 = rdtsc();
-        // Part 2 kernel end.
+        // Part 2: the AVX2 Sobel kernel. Reads blur. Writes mag and angle (0/45/90/135).
+        if (kernel == "v1")
+            sobel_kernel(w, h, blur.data(), mag.data(), angle.data());
+        else
+            sobel_kernel_v2(w, h, blur.data(), mag.data(), angle.data());
         t[2]=Clock::now();
-        // latency_simd_fma.c: cycles = MAX_FREQ/BASE_FREQ * rdtsc / outputs.
-        // kernel_driver.c:    flops/cycle = flops / (rdtsc * MAX_FREQ/BASE_FREQ).
-        const double rdtsc_cycles = double(c1 - c0);
-        const double turbo_cycles = rdtsc_cycles * MAX_FREQ / BASE_FREQ;
-        const double cycles_per_pixel = turbo_cycles / pixels;
-        const double flops_per_cycle = (SOBEL_FLOPS_PER_PIXEL * pixels) / turbo_cycles;
 
         // Part 3. Suppress gradient pixels that are not a ridge along their direction.
         // Clear every output first. A pixel left at 0 was rejected. The border stays 0.
@@ -193,21 +154,13 @@ int main(int argc, char** argv) try {
 
         // Timing: one pipeline total plus the five stage times, for recorded iterations only.
         if(it>=0) {
-            Sample row;
-            row.ms[0]=ms(t[0],t[5]);
+            std::array<double,6> row;
+            row[0]=ms(t[0],t[5]);
             for(int s=0;s<5;++s)
-                row.ms[s+1]=ms(t[s],t[s+1]);
-            row.rdtsc_cycles = rdtsc_cycles;
-            row.turbo_cycles = turbo_cycles;
-            row.cycles_per_pixel = cycles_per_pixel;
-            row.flops_per_cycle = flops_per_cycle;
+                row[s+1]=ms(t[s],t[s+1]);
             samples.push_back(row);
         }
     }
-
-    // Optional mag/angle/NMS dump. After the timed loop, so it is not a sample.
-    if (!stages_dump.empty())
-        write_stages_dump(stages_dump, w, h, mag, angle, suppressed);
 
     // Write output: binary PGM edge map. Kept pixels are 255, the rest are 0.
     std::ofstream out(output,std::ios::binary); out<<"P5\n"<<w<<" "<<h<<"\n255\n";
@@ -215,22 +168,12 @@ int main(int argc, char** argv) try {
     if(!out) throw std::runtime_error("Could not write output");
 
     // Timing report: one JSON object on stdout. File I/O above is not included in the samples.
-    // Millisecond fields stay. Sobel also reports the lab RDTSC measurement.
-    auto json_num = [](double value) {
-        std::cout << std::setprecision(17) << value;
-    };
-    std::cout<<"{\"timing_method\":\"steady_clock instrumented pipeline; allocations and I/O excluded; sobel also rdtsc * MAX_FREQ/BASE_FREQ\",\"samples\":[";
+    std::cout<<"{\"timing_method\":\"steady_clock instrumented pipeline; allocations and I/O excluded\",\"sobel_kernel\":\""<<kernel<<"\",\"samples\":[";
     for(size_t i=0;i<samples.size();++i) {
         if(i) std::cout<<",";
-        std::cout<<"{\"compute_ms\":"<<samples[i].ms[0]<<",\"e2e_ms\":"<<samples[i].ms[0];
+        std::cout<<"{\"compute_ms\":"<<samples[i][0]<<",\"e2e_ms\":"<<samples[i][0];
         const char* names[]={"blur_ms","sobel_ms","nms_ms","threshold_ms","hysteresis_ms"};
-        for(int s=0;s<5;++s) std::cout<<",\""<<names[s]<<"\":"<<samples[i].ms[s+1];
-        std::cout<<",\"sobel_rdtsc_cycles\":"; json_num(samples[i].rdtsc_cycles);
-        std::cout<<",\"sobel_turbo_cycles\":"; json_num(samples[i].turbo_cycles);
-        std::cout<<",\"sobel_cycles_per_pixel\":"; json_num(samples[i].cycles_per_pixel);
-        std::cout<<",\"sobel_flops_per_cycle\":"; json_num(samples[i].flops_per_cycle);
-        std::cout<<",\"sobel_threshold_cycles_per_pixel\":"; json_num(THRESHOLD_CYCLES_PER_PIXEL);
-        std::cout<<",\"sobel_threshold_flops_per_cycle\":"; json_num(THRESHOLD_FLOPS_PER_CYCLE);
+        for(int s=0;s<5;++s) std::cout<<",\""<<names[s]<<"\":"<<samples[i][s+1];
         std::cout<<"}";
     }
     std::cout<<"]}\n";

@@ -2,8 +2,7 @@
 
 Measures three CPU implementations on the same images:
 
-- `scalar` — `build/canny_scalar`, the five-stage C++ pipeline.
-- `part2` — `build/canny_part2`, the same pipeline with the optimized Sobel kernel. `./scripts/run_stages.sh --kernel part2` runs both executables on the same images.
+- `scalar` — `build/canny_scalar`, the five-stage C++ pipeline
 - `opencv-1` — OpenCV Gaussian blur plus Canny, one thread, OpenCL off
 - `opencv-multi` — the same OpenCV calls with the requested thread count
 
@@ -25,10 +24,6 @@ From the repository root, after `./scripts/setup_remote.sh`:
 Results go to `benchmark_results/<UTC>-<pid>/`. Open `run/plots/index.html`. `OUT=/some/new/path` picks the directory. `PYTHON=/path/to/venv/bin/python` picks the interpreter. Each run refuses to reuse an existing output directory.
 
 `./collect_hw_info.sh hardware_report.txt` records CPU, cache, memory, and the Python OpenCV build. Cache sizes are topology, not a measured performance limit.
-
-## Sobel and NMS
-
-Part 2 and Part 3 use `./scripts/run_stages.sh`. The view for that command is two line plots and one table under `benchmark_results/run-00N/comparison/`. Details are in [stages/README.md](stages/README.md).
 
 For a single-core scalar run, prefix the wrapper with `taskset -c 2`. The same pin also limits `opencv-multi`. Stop other heavy jobs if you are comparing times.
 

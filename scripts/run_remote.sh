@@ -34,7 +34,6 @@ fi
 STATUS=0
 "$PY" benchmarks/run.py --manifest "$DATA/manifest.json" --output "$OUT/run" "$@" || STATUS=$?
 PYTHON="$PY" ./collect_hw_info.sh "$OUT/hardware_after.txt"
-# Stages runs set SKIP_GENERIC_PLOTS so comparison/ stays limited to its own two plots.
-if [[ -f "$OUT/run/summary.csv" && -z "${SKIP_GENERIC_PLOTS:-}" ]]; then "$PY" benchmarks/plot.py "$OUT/run" || STATUS=$?; fi
+if [[ -f "$OUT/run/summary.csv" ]]; then "$PY" benchmarks/plot.py "$OUT/run" || STATUS=$?; fi
 printf '\nArtifacts: %s\n' "$OUT"
 exit "$STATUS"

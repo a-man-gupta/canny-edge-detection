@@ -6,6 +6,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # canny_part2 is the same pipeline with the Part 2 Sobel kernel swapped in.
 add_executable(canny_scalar src/canny_scalar.cpp)
 add_executable(canny_part2 src/canny_part2.cpp src/sobel_kernel.cpp)
+# Part 2 benchmark in the assignment-driver style: baseline vs v1 vs v2, cycles per pixel vs peak.
+add_executable(sobel_driver src/sobel_driver.cpp src/sobel_kernel.cpp)
 # AVX2 on the kernel translation unit only. canny_scalar.cpp keeps -fno-tree-vectorize
 # and does not get -mavx2. -mfma is not passed. -ffp-contract=off keeps gx*gx + gy*gy
 # from contracting into an FMA, so the magnitude stays mul, mul, add, sqrt.
@@ -13,13 +15,16 @@ set_source_files_properties(src/sobel_kernel.cpp PROPERTIES COMPILE_FLAGS "-mavx
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(canny_scalar PRIVATE -Wall -Wextra -Wpedantic)
   target_compile_options(canny_part2 PRIVATE -Wall -Wextra -Wpedantic)
+  target_compile_options(sobel_driver PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   target_compile_options(canny_scalar PRIVATE -fno-vectorize -fno-slp-vectorize)
   target_compile_options(canny_part2 PRIVATE -fno-vectorize -fno-slp-vectorize)
+  target_compile_options(sobel_driver PRIVATE -fno-vectorize -fno-slp-vectorize)
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   target_compile_options(canny_scalar PRIVATE -fno-tree-vectorize -fno-tree-slp-vectorize)
   target_compile_options(canny_part2 PRIVATE -fno-tree-vectorize -fno-tree-slp-vectorize)
+  target_compile_options(sobel_driver PRIVATE -fno-tree-vectorize -fno-tree-slp-vectorize)
 endif()
 # Hysteresis connectivity test, and a bitwise Sobel check against the scalar formula.
 include(CTest)

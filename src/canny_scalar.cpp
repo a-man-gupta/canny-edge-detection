@@ -2,7 +2,6 @@
 // Stages: read image, Gaussian blur, Sobel, non-maximum suppression,
 // double threshold, hysteresis, write the edge map, then print timings.
 #include "hysteresis.hpp"
-#include "stages_dump.hpp"
 
 #include <algorithm>
 #include <array>
@@ -30,7 +29,7 @@ static std::string token(std::istream& in) {
 }
 
 int main(int argc, char** argv) try {
-    std::string input, output, stages_dump;
+    std::string input, output;
     int iterations=100, warmup=10; float low=50, high=100, sigma=1.4f;
 
     // Read options: input, output, how many runs to time, and Canny parameters.
@@ -38,7 +37,6 @@ int main(int argc, char** argv) try {
         if(a+1==argc) throw std::runtime_error("Missing option value");
         std::string k=argv[a], v=argv[a+1];
         if(k=="--input") input=v; else if(k=="--output") output=v;
-        else if(k=="--stages-dump") stages_dump=v;
         else if(k=="--iterations") iterations=std::stoi(v);
         else if(k=="--warmup") warmup=std::stoi(v);
         else if(k=="--low") low=std::stof(v); else if(k=="--high") high=std::stof(v);
@@ -191,10 +189,6 @@ int main(int argc, char** argv) try {
             samples.push_back(row);
         }
     }
-
-    // Optional mag/angle/NMS dump. After the timed loop, so it is not a sample.
-    if (!stages_dump.empty())
-        write_stages_dump(stages_dump, w, h, mag, angle, suppressed);
 
     // Write output: binary PGM edge map. Kept pixels are 255, the rest are 0.
     std::ofstream out(output,std::ios::binary); out<<"P5\n"<<w<<" "<<h<<"\n255\n";
