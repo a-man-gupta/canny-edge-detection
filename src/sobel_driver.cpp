@@ -32,9 +32,9 @@
 //   gx = 2*dm + (a + b), gy = 2*dv + (a - b)                   -> 1 add + 1 sub + 2 FMA  = 6
 //   (an FMA is a multiply and an add: 2 FLOPs in one instruction)
 //   mag = sqrt(gx*gx + gy*gy)                                  -> 2 mul + 1 add + 1 sqrt = 4
-//   direction: |gx| * tan22.5, |gy| * tan22.5                  -> 2 mul                  = 2
-//   (the 2 compares and the blends are not floating-point arithmetic, so not FLOPs)
-#define FLOP_PER_PIXEL 16.0
+//   direction: gy^2 - gx^2*tan^2, gx^2 - gy^2*tan^2            -> 2 FMA                  = 4
+//   (the sign of each FMA result is the test; the blends are not floating-point arithmetic)
+#define FLOP_PER_PIXEL 18.0
 
 //timing routine for reading the time stamp counter
 static __inline__ unsigned long long rdtsc(void) {

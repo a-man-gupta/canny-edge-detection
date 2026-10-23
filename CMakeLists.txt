@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Scalar CPU Canny. The no-vectorize flags below stay as part of this reference build.
 # canny_part2 is the same pipeline with the Part 2 Sobel kernel swapped in.
 add_executable(canny_scalar src/canny_scalar.cpp)
-add_executable(canny_part2 src/canny_part2.cpp src/sobel_kernel.cpp)
+add_executable(canny_part2 src/canny_part2.cpp src/sobel_kernel.cpp src/sobel_image.cpp)
 # Part 2 benchmark in the assignment-driver style: scalar baseline vs kernel, cycles per pixel vs peak.
 add_executable(sobel_driver src/sobel_driver.cpp src/sobel_kernel.cpp)
 # AVX2 on the kernel translation unit only. canny_scalar.cpp keeps -fno-tree-vectorize
@@ -37,7 +37,7 @@ include(CTest)
 if(BUILD_TESTING)
   add_executable(test_hysteresis src/test_hysteresis.cpp)
   add_test(NAME hysteresis_connectivity COMMAND test_hysteresis)
-  add_executable(test_sobel_kernel src/test_sobel_kernel.cpp src/sobel_kernel.cpp)
+  add_executable(test_sobel_kernel src/test_sobel_kernel.cpp src/sobel_kernel.cpp src/sobel_image.cpp)
   if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(test_sobel_kernel PRIVATE -Wall -Wextra -Wpedantic)
   endif()
