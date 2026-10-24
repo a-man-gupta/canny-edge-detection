@@ -1,4 +1,4 @@
-// Part 2 pipeline. Same as canny_scalar.cpp, except Sobel calls the AVX2 kernel.
+// Part 2 pipeline. Same as canny_scalar.cpp, except Sobel calls the vector kernel (sobel_kernel.cpp).
 // Parts 1, 3, 4, and 5 are unchanged.
 // Prints the same millisecond JSON as canny_scalar, so benchmarks/run.py can time it.
 // Cycle counts and peak comparisons for the kernel are in sobel_driver.cpp.
@@ -92,7 +92,7 @@ int main(int argc, char** argv) try {
         }
         t[1]=Clock::now();
 
-        // Part 2: the AVX2 Sobel kernel. Reads blur. Writes mag and angle (0/45/90/135).
+        // Part 2: the vector Sobel kernel. Reads blur. Writes mag and angle (0/45/90/135).
         sobel_kernel(w, h, blur.data(), mag.data(), angle.data());
         t[2]=Clock::now();
 

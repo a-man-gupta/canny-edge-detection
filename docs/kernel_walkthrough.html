@@ -192,7 +192,7 @@ pre{font:13px/1.5 ui-monospace,Menlo,monospace;background:var(--card);padding:10
 </table>
 <h3 style="font-size:16px;font-weight:500;margin:18px 0 4px">Calculator: paste your counts from the Xeon</h3>
 <p>Run this on the Xeon and type the numbers it prints (instructions inside one loop iteration):</p>
-<pre>objdump -d --no-show-raw-insn build/CMakeFiles/sobel_kernel.dir/src/sobel_kernel.cpp.o | awk '/sobel_row_avx2/,/ret/' | awk '{print $2}' | grep -E '^v(add|sub|mul|fmadd|fnmadd|fmsub|cmp|sqrt)' | sort | uniq -c</pre>
+<pre>objdump -d --no-show-raw-insn build/CMakeFiles/sobel_kernel.dir/src/sobel_kernel.cpp.o | awk '/sobel_row/,/ret/' | awk '{print $2}' | grep -E '^v(add|sub|mul|fmadd|fnmadd|fmsub|cmp|sqrt)' | sort | uniq -c</pre>
 <div class="cards" id="calcIn" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr))"></div>
 <div class="cards">
 <div class="card"><div>FP instructions per iteration</div><div id="o_fp">–</div></div>
@@ -246,7 +246,7 @@ pre{font:13px/1.5 ui-monospace,Menlo,monospace;background:var(--card);padding:10
 </table>
 <p><b>Max ≈ 12 of 16 → no spill</b>, with a few spare. Two coding rules make it work: use <code>t + t</code> instead of multiplying by a 2.0 constant (or let the fma read 2.0 from memory), and write group A's finishing code before group B's so the compiler doesn't keep everything alive at once. The CPU still overlaps the groups at run time because it renames registers internally (the Architecture slides: "logical registers vs physical registers" — 16 names, ~180 real registers).</p>
 <p><b>How to check you didn't spill</b> — no <code>ymm</code> stores/loads to the stack in the kernel loop:</p>
-<pre>objdump -d --no-show-raw-insn build/CMakeFiles/sobel_kernel.dir/src/sobel_kernel.cpp.o | awk '/sobel_row_avx2/,/ret/' | grep -E 'ymm.*\(%rsp\)|\(%rsp\).*ymm' | wc -l</pre>
+<pre>objdump -d --no-show-raw-insn build/CMakeFiles/sobel_kernel.dir/src/sobel_kernel.cpp.o | awk '/sobel_row/,/ret/' | grep -E 'ymm.*\(%rsp\)|\(%rsp\).*ymm' | wc -l</pre>
 <p>It should print <code>0</code>. Build with <code>-O3 -mavx2 -mfma</code> (16 registers) so the result also holds on any AVX2 machine.</p>
 </div>
  <div class="panel"><div class="t" style="font-weight:500">L1 cache (32 KB) for the peak test</div>

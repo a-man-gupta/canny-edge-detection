@@ -4,3 +4,9 @@ build/
 benchmark_data/
 benchmark_results/
 hardware_report.txt
+
+# Makefile outputs in the repo root
+/*.o
+/*.x
+/*.S
+/*.s

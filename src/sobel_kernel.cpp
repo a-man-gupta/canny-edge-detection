@@ -1,3 +1,14 @@
+// Part 2 Sobel kernel: gradient magnitude and direction bin for one image row.
+//
+// 8 pixels per ymm register (256-bit). Uses AVX2 + FMA for the math and AVX-512VL/DQ for
+// mask registers (k) and 32 ymm registers. It stays on 256-bit registers, so the core keeps
+// the AVX2 clock (512-bit zmm code drops to about 2/3 of it on this Xeon).
+// Compile with -mavx2 -mfma -mavx512f -mavx512vl -mavx512dq -ffp-contract=off.
+//
+// Measured on ece017-024 (Xeon Silver 4208), real core cycles, 1026-wide row in L1:
+//   1.16-1.18 cycles/pixel. Peak 0.8125 (13 FP-unit instructions per 8 pixels / 2 FP units).
+//   The same loop with the direction test as 2 FMAs ran at 1.27-1.30, and the earlier
+//   one-stage AVX2 loop with vblendvps at 1.51.
 #include "sobel_kernel.hpp"
 
 #include <cmath>
@@ -6,8 +17,13 @@
 
 // Sector test on squares: gy^2 < gx^2 * tan(22.5)^2 is |gy| < |gx| * tan(22.5) without the
 // absolute values (gx*gx and gy*gy are already computed for the magnitude, and are exact
-// because blur values are whole numbers). tan(22.5)^2 = (sqrt(2) - 1)^2 = 3 - 2*sqrt(2).
-static const float kTan22Sq = static_cast<float>(3.0 - 2.0 * std::sqrt(2.0));
+// because blur values are whole numbers). With t = tan(22.5)^2 = 3 - 2*sqrt(2) and
+// s = gx^2 + gy^2 (also computed for the magnitude):
+//   gy^2 < gx^2 * t   <=>   gy^2 < s * t / (1 + t)
+// So one product p = s * c serves both tests (gy^2 < p, gx^2 < p): 1 multiply instead of 2 FMAs.
+// Checked for every integer pair |gx|, |gy| <= 1020 (all Sobel values of 0..255 blur):
+// the bins are identical to the FMA form fma(-gx^2, t, gy^2) < 0.
+static const float kSectorC = static_cast<float>((3.0 - 2.0 * std::sqrt(2.0)) / (4.0 - 2.0 * std::sqrt(2.0)));
 
 // Markers so scripts/count_sobel_ops.sh can see one iteration.
 // Present only with -DSOBEL_MARK_LOOPS. The normal build has none.
@@ -23,184 +39,153 @@ static const float kTan22Sq = static_cast<float>(3.0 - 2.0 * std::sqrt(2.0));
 float sobel_classify_angle(float gx, float gy) {
     float gx2 = gx * gx;
     float gy2 = gy * gy;
-    // The same fused multiply-add as the vector code (one rounding), so both agree bit for bit.
-    if (std::fma(-gx2, kTan22Sq, gy2) < 0)   // gy^2 - gx^2 * tan^2 < 0
+    float p = (gx2 + gy2) * kSectorC;      // the same rounding as the vector code
+    if (gy2 < p)                           // gy^2 < gx^2 * tan^2: horizontal
         return 0.f;
-    if (std::fma(-gy2, kTan22Sq, gx2) < 0)   // gx^2 - gy^2 * tan^2 < 0
+    if (gx2 < p)                           // gx^2 < gy^2 * tan^2: vertical
         return 90.f;
     if (std::signbit(gx) == std::signbit(gy))
         return 45.f;
     return 135.f;
 }
 
-// One interior row, columns x_begin .. x_limit-1, written as one function with the loops
-// unrolled by hand. Returns the first column not written.
+// Helpers are pasted into the loop (always_inline), never called.
+#define ALWAYS_INLINE static inline __attribute__((always_inline))
+
+// gx and gy for the 8 pixels at columns c .. c+7.
+// Scalar: gx = -tl + tr - 2*ml + 2*mr - bl + br
+//         gy = -tl - 2*tm - tr + bl + 2*bm + br
+// (t/m/b = row above / this row / row below, l/r = one column left / right)
+ALWAYS_INLINE void gradients8(const float* top, const float* mid, const float* bot, int c,
+                              __m256 two, __m256& gx, __m256& gy) {
+    const __m256 a  = _mm256_sub_ps(_mm256_loadu_ps(bot + c + 1), _mm256_loadu_ps(top + c - 1));   // br - tl
+    const __m256 b  = _mm256_sub_ps(_mm256_loadu_ps(top + c + 1), _mm256_loadu_ps(bot + c - 1));   // tr - bl
+    const __m256 dm = _mm256_sub_ps(_mm256_loadu_ps(mid + c + 1), _mm256_loadu_ps(mid + c - 1));   // mr - ml
+    const __m256 dv = _mm256_sub_ps(_mm256_loadu_ps(bot + c), _mm256_loadu_ps(top + c));           // bm - tm
+    gx = _mm256_fmadd_ps(dm, two, _mm256_add_ps(a, b));   // gx = 2*(mr - ml) + (br - tl) + (tr - bl)
+    gy = _mm256_fmadd_ps(dv, two, _mm256_sub_ps(a, b));   // gy = 2*(bm - tm) + (br - tl) - (tr - bl)
+}
+
+// Magnitude and direction for 8 pixels, then both stores.
+ALWAYS_INLINE void finish8(__m256 gx, __m256 gy, float* mag, float* angle, __m256 sectorc) {
+    // Scalar: mag[i] = sqrt(gx*gx + gy*gy)
+    const __m256 gxx = _mm256_mul_ps(gx, gx);
+    const __m256 gyy = _mm256_mul_ps(gy, gy);
+    const __m256 s = _mm256_add_ps(gxx, gyy);
+    _mm256_storeu_ps(mag, _mm256_sqrt_ps(s));
+
+    // Scalar: angle[i] = sobel_classify_angle(gx, gy). Each test gives a mask, one bit per pixel.
+    // A compare into a mask register runs on port 5 and a masked move is 1 uop, so ports 0 and 1
+    // (the FP units) keep the math. vblendvps would be 2 uops that compete for ports 0 and 1.
+    const __m256 zero = _mm256_setzero_ps();
+    const __m256 p = _mm256_mul_ps(s, sectorc);
+    const __mmask8 horiz = _mm256_cmp_ps_mask(gyy, p, _CMP_LT_OQ);   // gy^2 < s*c
+    const __mmask8 vert  = _mm256_cmp_ps_mask(gxx, p, _CMP_LT_OQ);   // gx^2 < s*c
+    const __mmask8 differ = _mm256_test_epi32_mask(_mm256_castps_si256(_mm256_xor_ps(gx, gy)),
+                                                   _mm256_set1_epi32(0x80000000));                 // sign of gx xor gy
+
+    __m256 bin = _mm256_mask_blend_ps(differ, _mm256_set1_ps(45.f), _mm256_set1_ps(135.f));  // signs differ -> 135, else 45
+    bin = _mm256_mask_blend_ps(vert, bin, _mm256_set1_ps(90.f));                              // vertical -> 90
+    bin = _mm256_mask_blend_ps(horiz, bin, zero);                                             // horizontal -> 0
+    _mm256_storeu_ps(angle, bin);
+}
+
+// One interior row, columns x_begin .. x_limit-1. Returns the first column not written.
 //
-// Each iteration does 32 pixels as four independent groups of 8 (A, B, C, D), one ymm
-// register per group. Why four: an FP add/sub/mul/FMA takes 4 cycles and there are 2 FP
-// units, so 4 x 2 = 8 independent operations must be in flight; each group gives 2 per step
-// (gx and gy), so 4 groups. All four gradients come first, then the four finishes.
+// Why the loop is shaped like this:
+//   One group of 8 pixels is one long dependency chain, about 40 cycles:
+//       loads -> 4 sub -> add -> FMA -> mul -> add -> sqrt (12) -> store
+//                                       add -> mul -> compare -> 3 blends -> store
+//   An instruction waiting for its inputs sits in the scheduler (97 entries), and when the
+//   scheduler is full the core cannot look further ahead for independent work.
+//   So the loop is software-pipelined: it computes the gradients of the NEXT 32 pixels while
+//   it finishes the current 32. The finish instructions then find their inputs ready.
 //
-// Order the instructions appear in (each column is one group; down = later):
+//   Blocks of 32 pixels = four groups of 8 (A, B, C, D). Two register sets: g (current block)
+//   and n (next block), 16 ymm registers. AVX-512VL has 32 ymm registers, so both sets and the
+//   temporaries fit with no spills. One iteration does two blocks and the sets swap roles,
+//   so there are no register copies at the end of an iteration:
 //
-//        A            B            C            D
-//   load, 4 sub  load, 4 sub  load, 4 sub  load, 4 sub     <- gradients, all independent
-//   a+b, a-b     a+b, a-b     a+b, a-b     a+b, a-b
-//   FMA gx, gy   FMA gx, gy   FMA gx, gy   FMA gx, gy
-//      |            |            |            |
-//   gx2, gy2        |            |            |            <- finishes, one group at a time;
-//   sum -> sqrt     |            |            |               while A waits on its sqrt,
-//   cmp, blend      |            |            |               B, C, D still have work
-//   store A      gx2, gy2        |            |
-//                sum -> sqrt     |            |
-//                cmp, blend      |            |
-//                store B      ... C ...    ... D ...
+//     before the loop:  g = gradients(block 0)
+//     iteration:        n = gradients(block 1)   while finishing g (block 0)
+//                       g = gradients(block 2)   while finishing n (block 1)
+//     after the loop:   one more pipelined block if two are left, then finish g
+//
+//   Inside each half the groups alternate: gradients of next A, finish of current A,
+//   gradients of next B, finish of current B, ...
 //
 // The last 8..31 pixels: groups of 8, then one group of 8 that ends on the last column
 // (it overlaps columns already written and stores the same values). Rows shorter than 8
 // are left to the scalar code.
-int sobel_row_avx2(const float* top, const float* mid, const float* bot,
-                   float* mag_row, float* angle_row, int x_begin, int x_limit) {
+int sobel_row(const float* top, const float* mid, const float* bot,
+              float* mag_row, float* angle_row, int x_begin, int x_limit) {
     // Constants, kept in registers for the whole row.
     const __m256 two = _mm256_set1_ps(2.0f);
-    const __m256 tan22sq = _mm256_set1_ps(kTan22Sq);
-    const __m256 deg45 = _mm256_set1_ps(45.f);
-    const __m256 deg90 = _mm256_set1_ps(90.f);
-    const __m256 deg135 = _mm256_set1_ps(135.f);
-    const __m256 zero = _mm256_setzero_ps();
+    const __m256 sectorc = _mm256_set1_ps(kSectorC);
 
     int x = x_begin;
-    for (; x + 32 <= x_limit; x += 32) {
-        LOOP_BEGIN(32);
-        // ---- Group A: gradients for pixels x .. x+7 ----
-        // Scalar: gx = -tl + tr - 2*ml + 2*mr - bl + br
-        //         gy = -tl - 2*tm - tr + bl + 2*bm + br
-        // (t/m/b = row above / this row / row below, l/r = one column left / right)
-        const __m256 aA  = _mm256_sub_ps(_mm256_loadu_ps(bot + x + 1), _mm256_loadu_ps(top + x - 1));   // br - tl
-        const __m256 bA  = _mm256_sub_ps(_mm256_loadu_ps(top + x + 1), _mm256_loadu_ps(bot + x - 1));   // tr - bl
-        const __m256 dmA = _mm256_sub_ps(_mm256_loadu_ps(mid + x + 1), _mm256_loadu_ps(mid + x - 1));   // mr - ml
-        const __m256 dvA = _mm256_sub_ps(_mm256_loadu_ps(bot + x), _mm256_loadu_ps(top + x));           // bm - tm
-        const __m256 gxA = _mm256_fmadd_ps(dmA, two, _mm256_add_ps(aA, bA));   // gx = 2*(mr - ml) + (br - tl) + (tr - bl)
-        const __m256 gyA = _mm256_fmadd_ps(dvA, two, _mm256_sub_ps(aA, bA));   // gy = 2*(bm - tm) + (br - tl) - (tr - bl)
+    if (x + 32 <= x_limit) {
+        __m256 gxA, gyA, gxB, gyB, gxC, gyC, gxD, gyD;   // current block
+        __m256 nxA, nyA, nxB, nyB, nxC, nyC, nxD, nyD;   // next block
+        gradients8(top, mid, bot, x, two, gxA, gyA);
+        gradients8(top, mid, bot, x + 8, two, gxB, gyB);
+        gradients8(top, mid, bot, x + 16, two, gxC, gyC);
+        gradients8(top, mid, bot, x + 24, two, gxD, gyD);
 
-        // ---- Group B: gradients for pixels x+8 .. x+15 ----
-        // Scalar: gx = -tl + tr - 2*ml + 2*mr - bl + br
-        //         gy = -tl - 2*tm - tr + bl + 2*bm + br
-        // (t/m/b = row above / this row / row below, l/r = one column left / right)
-        const __m256 aB  = _mm256_sub_ps(_mm256_loadu_ps(bot + x + 8 + 1), _mm256_loadu_ps(top + x + 8 - 1));   // br - tl
-        const __m256 bB  = _mm256_sub_ps(_mm256_loadu_ps(top + x + 8 + 1), _mm256_loadu_ps(bot + x + 8 - 1));   // tr - bl
-        const __m256 dmB = _mm256_sub_ps(_mm256_loadu_ps(mid + x + 8 + 1), _mm256_loadu_ps(mid + x + 8 - 1));   // mr - ml
-        const __m256 dvB = _mm256_sub_ps(_mm256_loadu_ps(bot + x + 8), _mm256_loadu_ps(top + x + 8));           // bm - tm
-        const __m256 gxB = _mm256_fmadd_ps(dmB, two, _mm256_add_ps(aB, bB));   // gx = 2*(mr - ml) + (br - tl) + (tr - bl)
-        const __m256 gyB = _mm256_fmadd_ps(dvB, two, _mm256_sub_ps(aB, bB));   // gy = 2*(bm - tm) + (br - tl) - (tr - bl)
+        for (; x + 96 <= x_limit; x += 64) {
+            LOOP_BEGIN(64);
+            // n = block at x+32, finish g = block at x
+            gradients8(top, mid, bot, x + 32, two, nxA, nyA);
+            finish8(gxA, gyA, mag_row + x, angle_row + x, sectorc);
+            gradients8(top, mid, bot, x + 40, two, nxB, nyB);
+            finish8(gxB, gyB, mag_row + x + 8, angle_row + x + 8, sectorc);
+            gradients8(top, mid, bot, x + 48, two, nxC, nyC);
+            finish8(gxC, gyC, mag_row + x + 16, angle_row + x + 16, sectorc);
+            gradients8(top, mid, bot, x + 56, two, nxD, nyD);
+            finish8(gxD, gyD, mag_row + x + 24, angle_row + x + 24, sectorc);
+            // g = block at x+64, finish n = block at x+32
+            gradients8(top, mid, bot, x + 64, two, gxA, gyA);
+            finish8(nxA, nyA, mag_row + x + 32, angle_row + x + 32, sectorc);
+            gradients8(top, mid, bot, x + 72, two, gxB, gyB);
+            finish8(nxB, nyB, mag_row + x + 40, angle_row + x + 40, sectorc);
+            gradients8(top, mid, bot, x + 80, two, gxC, gyC);
+            finish8(nxC, nyC, mag_row + x + 48, angle_row + x + 48, sectorc);
+            gradients8(top, mid, bot, x + 88, two, gxD, gyD);
+            finish8(nxD, nyD, mag_row + x + 56, angle_row + x + 56, sectorc);
+            LOOP_END();
+        }
 
-        // ---- Group C: gradients for pixels x+16 .. x+23 ----
-        // Scalar: gx = -tl + tr - 2*ml + 2*mr - bl + br
-        //         gy = -tl - 2*tm - tr + bl + 2*bm + br
-        // (t/m/b = row above / this row / row below, l/r = one column left / right)
-        const __m256 aC  = _mm256_sub_ps(_mm256_loadu_ps(bot + x + 16 + 1), _mm256_loadu_ps(top + x + 16 - 1));   // br - tl
-        const __m256 bC  = _mm256_sub_ps(_mm256_loadu_ps(top + x + 16 + 1), _mm256_loadu_ps(bot + x + 16 - 1));   // tr - bl
-        const __m256 dmC = _mm256_sub_ps(_mm256_loadu_ps(mid + x + 16 + 1), _mm256_loadu_ps(mid + x + 16 - 1));   // mr - ml
-        const __m256 dvC = _mm256_sub_ps(_mm256_loadu_ps(bot + x + 16), _mm256_loadu_ps(top + x + 16));           // bm - tm
-        const __m256 gxC = _mm256_fmadd_ps(dmC, two, _mm256_add_ps(aC, bC));   // gx = 2*(mr - ml) + (br - tl) + (tr - bl)
-        const __m256 gyC = _mm256_fmadd_ps(dvC, two, _mm256_sub_ps(aC, bC));   // gy = 2*(bm - tm) + (br - tl) - (tr - bl)
+        // One more pipelined block if two full blocks are left.
+        if (x + 64 <= x_limit) {
+            gradients8(top, mid, bot, x + 32, two, nxA, nyA);
+            finish8(gxA, gyA, mag_row + x, angle_row + x, sectorc);
+            gradients8(top, mid, bot, x + 40, two, nxB, nyB);
+            finish8(gxB, gyB, mag_row + x + 8, angle_row + x + 8, sectorc);
+            gradients8(top, mid, bot, x + 48, two, nxC, nyC);
+            finish8(gxC, gyC, mag_row + x + 16, angle_row + x + 16, sectorc);
+            gradients8(top, mid, bot, x + 56, two, nxD, nyD);
+            finish8(gxD, gyD, mag_row + x + 24, angle_row + x + 24, sectorc);
+            gxA = nxA; gyA = nyA; gxB = nxB; gyB = nyB;
+            gxC = nxC; gyC = nyC; gxD = nxD; gyD = nyD;
+            x += 32;
+        }
 
-        // ---- Group D: gradients for pixels x+24 .. x+31 ----
-        // Scalar: gx = -tl + tr - 2*ml + 2*mr - bl + br
-        //         gy = -tl - 2*tm - tr + bl + 2*bm + br
-        // (t/m/b = row above / this row / row below, l/r = one column left / right)
-        const __m256 aD  = _mm256_sub_ps(_mm256_loadu_ps(bot + x + 24 + 1), _mm256_loadu_ps(top + x + 24 - 1));   // br - tl
-        const __m256 bD  = _mm256_sub_ps(_mm256_loadu_ps(top + x + 24 + 1), _mm256_loadu_ps(bot + x + 24 - 1));   // tr - bl
-        const __m256 dmD = _mm256_sub_ps(_mm256_loadu_ps(mid + x + 24 + 1), _mm256_loadu_ps(mid + x + 24 - 1));   // mr - ml
-        const __m256 dvD = _mm256_sub_ps(_mm256_loadu_ps(bot + x + 24), _mm256_loadu_ps(top + x + 24));           // bm - tm
-        const __m256 gxD = _mm256_fmadd_ps(dmD, two, _mm256_add_ps(aD, bD));   // gx = 2*(mr - ml) + (br - tl) + (tr - bl)
-        const __m256 gyD = _mm256_fmadd_ps(dvD, two, _mm256_sub_ps(aD, bD));   // gy = 2*(bm - tm) + (br - tl) - (tr - bl)
-
-        // All four gradients are done. Each group now finishes on its own chain while the
-        // others still have independent work for the FP units.
-
-        // ---- Group A: magnitude and direction for pixels x .. x+7 ----
-        // Scalar: mag[i] = sqrt(gx*gx + gy*gy)
-        const __m256 gxxA = _mm256_mul_ps(gxA, gxA);
-        const __m256 gyyA = _mm256_mul_ps(gyA, gyA);
-        _mm256_storeu_ps(mag_row + x, _mm256_sqrt_ps(_mm256_add_ps(gxxA, gyyA)));
-        // Scalar: angle[i] = direction bin (sobel_classify_angle: the same four tests)
-        const __m256 horizA = _mm256_fnmadd_ps(gxxA, tan22sq, gyyA);  // gy^2 - gx^2*tan^2: negative near 0 degrees
-        const __m256 vertA  = _mm256_fnmadd_ps(gyyA, tan22sq, gxxA);  // gx^2 - gy^2*tan^2: negative near 90 degrees
-        __m256 binA = _mm256_blendv_ps(deg45, deg135, _mm256_xor_ps(gxA, gyA));  // signs differ -> 135, else 45
-        binA = _mm256_blendv_ps(binA, deg90, vertA);                               // vertical -> 90
-        binA = _mm256_blendv_ps(binA, zero, horizA);                               // horizontal -> 0
-        _mm256_storeu_ps(angle_row + x, binA);
-
-        // ---- Group B: magnitude and direction for pixels x+8 .. x+15 ----
-        // Scalar: mag[i] = sqrt(gx*gx + gy*gy)
-        const __m256 gxxB = _mm256_mul_ps(gxB, gxB);
-        const __m256 gyyB = _mm256_mul_ps(gyB, gyB);
-        _mm256_storeu_ps(mag_row + x + 8, _mm256_sqrt_ps(_mm256_add_ps(gxxB, gyyB)));
-        // Scalar: angle[i] = direction bin (sobel_classify_angle: the same four tests)
-        const __m256 horizB = _mm256_fnmadd_ps(gxxB, tan22sq, gyyB);  // gy^2 - gx^2*tan^2: negative near 0 degrees
-        const __m256 vertB  = _mm256_fnmadd_ps(gyyB, tan22sq, gxxB);  // gx^2 - gy^2*tan^2: negative near 90 degrees
-        __m256 binB = _mm256_blendv_ps(deg45, deg135, _mm256_xor_ps(gxB, gyB));  // signs differ -> 135, else 45
-        binB = _mm256_blendv_ps(binB, deg90, vertB);                               // vertical -> 90
-        binB = _mm256_blendv_ps(binB, zero, horizB);                               // horizontal -> 0
-        _mm256_storeu_ps(angle_row + x + 8, binB);
-
-        // ---- Group C: magnitude and direction for pixels x+16 .. x+23 ----
-        // Scalar: mag[i] = sqrt(gx*gx + gy*gy)
-        const __m256 gxxC = _mm256_mul_ps(gxC, gxC);
-        const __m256 gyyC = _mm256_mul_ps(gyC, gyC);
-        _mm256_storeu_ps(mag_row + x + 16, _mm256_sqrt_ps(_mm256_add_ps(gxxC, gyyC)));
-        // Scalar: angle[i] = direction bin (sobel_classify_angle: the same four tests)
-        const __m256 horizC = _mm256_fnmadd_ps(gxxC, tan22sq, gyyC);  // gy^2 - gx^2*tan^2: negative near 0 degrees
-        const __m256 vertC  = _mm256_fnmadd_ps(gyyC, tan22sq, gxxC);  // gx^2 - gy^2*tan^2: negative near 90 degrees
-        __m256 binC = _mm256_blendv_ps(deg45, deg135, _mm256_xor_ps(gxC, gyC));  // signs differ -> 135, else 45
-        binC = _mm256_blendv_ps(binC, deg90, vertC);                               // vertical -> 90
-        binC = _mm256_blendv_ps(binC, zero, horizC);                               // horizontal -> 0
-        _mm256_storeu_ps(angle_row + x + 16, binC);
-
-        // ---- Group D: magnitude and direction for pixels x+24 .. x+31 ----
-        // Scalar: mag[i] = sqrt(gx*gx + gy*gy)
-        const __m256 gxxD = _mm256_mul_ps(gxD, gxD);
-        const __m256 gyyD = _mm256_mul_ps(gyD, gyD);
-        _mm256_storeu_ps(mag_row + x + 24, _mm256_sqrt_ps(_mm256_add_ps(gxxD, gyyD)));
-        // Scalar: angle[i] = direction bin (sobel_classify_angle: the same four tests)
-        const __m256 horizD = _mm256_fnmadd_ps(gxxD, tan22sq, gyyD);  // gy^2 - gx^2*tan^2: negative near 0 degrees
-        const __m256 vertD  = _mm256_fnmadd_ps(gyyD, tan22sq, gxxD);  // gx^2 - gy^2*tan^2: negative near 90 degrees
-        __m256 binD = _mm256_blendv_ps(deg45, deg135, _mm256_xor_ps(gxD, gyD));  // signs differ -> 135, else 45
-        binD = _mm256_blendv_ps(binD, deg90, vertD);                               // vertical -> 90
-        binD = _mm256_blendv_ps(binD, zero, horizD);                               // horizontal -> 0
-        _mm256_storeu_ps(angle_row + x + 24, binD);
-        LOOP_END();
+        // Finish the last loaded block.
+        finish8(gxA, gyA, mag_row + x, angle_row + x, sectorc);
+        finish8(gxB, gyB, mag_row + x + 8, angle_row + x + 8, sectorc);
+        finish8(gxC, gyC, mag_row + x + 16, angle_row + x + 16, sectorc);
+        finish8(gxD, gyD, mag_row + x + 24, angle_row + x + 24, sectorc);
+        x += 32;
     }
 
-    // Leftover pixels, one group of 8 at a time (same code as group A above).
+    // Leftover pixels, one group of 8 at a time.
     if (x_limit - x_begin < 8)
         return x;
     while (x < x_limit) {
         const int c = (x + 8 <= x_limit) ? x : x_limit - 8;   // the last group may overlap
-        // ---- Tail group: gradients for pixels c .. c+7 ----
-        // Scalar: gx = -tl + tr - 2*ml + 2*mr - bl + br
-        //         gy = -tl - 2*tm - tr + bl + 2*bm + br
-        // (t/m/b = row above / this row / row below, l/r = one column left / right)
-        const __m256 aT  = _mm256_sub_ps(_mm256_loadu_ps(bot + c + 1), _mm256_loadu_ps(top + c - 1));   // br - tl
-        const __m256 bT  = _mm256_sub_ps(_mm256_loadu_ps(top + c + 1), _mm256_loadu_ps(bot + c - 1));   // tr - bl
-        const __m256 dmT = _mm256_sub_ps(_mm256_loadu_ps(mid + c + 1), _mm256_loadu_ps(mid + c - 1));   // mr - ml
-        const __m256 dvT = _mm256_sub_ps(_mm256_loadu_ps(bot + c), _mm256_loadu_ps(top + c));           // bm - tm
-        const __m256 gxT = _mm256_fmadd_ps(dmT, two, _mm256_add_ps(aT, bT));   // gx = 2*(mr - ml) + (br - tl) + (tr - bl)
-        const __m256 gyT = _mm256_fmadd_ps(dvT, two, _mm256_sub_ps(aT, bT));   // gy = 2*(bm - tm) + (br - tl) - (tr - bl)
-        // ---- Tail group: magnitude and direction for pixels c .. c+7 ----
-        // Scalar: mag[i] = sqrt(gx*gx + gy*gy)
-        const __m256 gxxT = _mm256_mul_ps(gxT, gxT);
-        const __m256 gyyT = _mm256_mul_ps(gyT, gyT);
-        _mm256_storeu_ps(mag_row + c, _mm256_sqrt_ps(_mm256_add_ps(gxxT, gyyT)));
-        // Scalar: angle[i] = direction bin (sobel_classify_angle: the same four tests)
-        const __m256 horizT = _mm256_fnmadd_ps(gxxT, tan22sq, gyyT);  // gy^2 - gx^2*tan^2: negative near 0 degrees
-        const __m256 vertT  = _mm256_fnmadd_ps(gyyT, tan22sq, gxxT);  // gx^2 - gy^2*tan^2: negative near 90 degrees
-        __m256 binT = _mm256_blendv_ps(deg45, deg135, _mm256_xor_ps(gxT, gyT));  // signs differ -> 135, else 45
-        binT = _mm256_blendv_ps(binT, deg90, vertT);                               // vertical -> 90
-        binT = _mm256_blendv_ps(binT, zero, horizT);                               // horizontal -> 0
-        _mm256_storeu_ps(angle_row + c, binT);
-
+        __m256 gx, gy;
+        gradients8(top, mid, bot, c, two, gx, gy);
+        finish8(gx, gy, mag_row + c, angle_row + c, sectorc);
         x = c + 8;
     }
     return x;

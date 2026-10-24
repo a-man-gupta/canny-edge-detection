@@ -1,4 +1,4 @@
-// Part 2 for a whole image: the AVX2 row kernel (sobel_kernel.cpp) on the interior of each
+// Part 2 for a whole image: the vector row kernel (sobel_row in sobel_kernel.cpp) on the interior of each
 // row, and scalar code for the border pixels, where the 3x3 window falls outside the image.
 #include "sobel_kernel.hpp"
 
@@ -33,7 +33,7 @@ static void scalar_at(const float* blur, int w, int h, int y, int x,
 
 // Whole image. Top and bottom rows clamp in y, so they stay scalar.
 // Left and right borders clamp in x, so they stay scalar. The interior of each
-// other row is sobel_row_avx2.
+// other row is sobel_row.
 void sobel_kernel(int w, int h,
                   const float* __restrict blur,
                   float* __restrict mag,
@@ -49,7 +49,7 @@ void sobel_kernel(int w, int h,
         const float* top = blur + size_t(y - 1) * w;
         const float* mid = blur + size_t(y) * w;
         const float* bot = blur + size_t(y + 1) * w;
-        int x = sobel_row_avx2(top, mid, bot, mag + size_t(y) * w, angle + size_t(y) * w, 1, w - 1);
+        int x = sobel_row(top, mid, bot, mag + size_t(y) * w, angle + size_t(y) * w, 1, w - 1);
         for (; x < w; ++x)
             scalar_at(blur, w, h, y, x, mag, angle);
     }

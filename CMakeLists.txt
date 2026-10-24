@@ -8,6 +8,8 @@ add_executable(canny_scalar src/canny_scalar.cpp)
 add_executable(canny_part2 src/canny_part2.cpp src/sobel_kernel.cpp src/sobel_image.cpp)
 # Part 2 benchmark in the assignment-driver style: scalar baseline vs kernel, cycles per pixel vs peak.
 add_executable(sobel_driver src/sobel_driver.cpp src/sobel_kernel.cpp)
+# Part 3 benchmark, same style.
+add_executable(nms_driver src/nms_driver.cpp src/nms_kernel.cpp)
 # AVX2 on the kernel translation unit only. canny_scalar.cpp keeps -fno-tree-vectorize
 # and does not get -mavx2. -mfma allows the kernel's explicit FMA intrinsics (gx and gy:
 # 2*dm + (a + b)); they are exact because the blur values are whole numbers.
@@ -16,8 +18,14 @@ add_executable(sobel_driver src/sobel_driver.cpp src/sobel_kernel.cpp)
 # store into two 128-bit halves (vinsertf128 / vextractf128). That is only a tuning choice, not
 # different math: turning it off keeps the same results, and removes ~50 instructions
 # and the register spills from the 32-pixel loop (measured on ece024: 2.49 -> 1.72 cycles/pixel).
+# -mavx512f -mavx512vl -mavx512dq: the Sobel kernel stays on 256-bit registers (AVX2 clock) but
+# uses mask registers for the direction bins and the 32 ymm registers AVX-512VL gives, so its
+# software-pipelined loop fits with no spills (1.51 -> 1.27 cycles/pixel on ece017-024).
 set_source_files_properties(src/sobel_kernel.cpp PROPERTIES COMPILE_FLAGS
-  "-mavx2 -mfma -ffp-contract=off -mno-avx256-split-unaligned-load -mno-avx256-split-unaligned-store")
+  "-mavx2 -mfma -mavx512f -mavx512vl -mavx512dq -ffp-contract=off -mno-avx256-split-unaligned-load -mno-avx256-split-unaligned-store")
+# NMS uses the same AVX-512VL masks (masked merge loads pick the neighbors), also 256-bit only.
+set_source_files_properties(src/nms_kernel.cpp PROPERTIES COMPILE_FLAGS
+  "-mavx2 -mavx512f -mavx512vl -mavx512dq -mno-avx256-split-unaligned-load -mno-avx256-split-unaligned-store")
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(canny_scalar PRIVATE -Wall -Wextra -Wpedantic)
   target_compile_options(canny_part2 PRIVATE -Wall -Wextra -Wpedantic)
@@ -47,4 +55,7 @@ if(BUILD_TESTING)
     target_compile_options(test_sobel_kernel PRIVATE -fno-tree-vectorize -fno-tree-slp-vectorize)
   endif()
   add_test(NAME sobel_kernel_matches_scalar COMMAND test_sobel_kernel)
+  # Part 3 kernel against the scalar NMS loop, bit for bit.
+  add_executable(test_nms_kernel src/test_nms_kernel.cpp src/nms_kernel.cpp)
+  add_test(NAME nms_kernel_matches_scalar COMMAND test_nms_kernel)
 endif()
