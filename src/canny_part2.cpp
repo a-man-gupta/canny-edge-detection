@@ -1,5 +1,7 @@
-// Part 2 pipeline. Same as canny_scalar.cpp, except Sobel calls the vector kernel (sobel_kernel.cpp).
-// Parts 1, 3, 4, and 5 are unchanged.
+// Part 2 pipeline. Same stages as canny_scalar.cpp, with Sobel done by the integer vector kernel
+// (sobel_kernel.cpp) and the data in integers, as in OpenCV's Canny (L2gradient=true):
+//   blur uint8, gradient magnitude as int32 gx*gx + gy*gy (no square root), direction bin uint8,
+//   and the two thresholds squared to match the squared magnitude (OpenCV does the same).
 // Prints the same millisecond JSON as canny_scalar, so benchmarks/run.py can time it.
 // Cycle counts and peak comparisons for the kernel are in sobel_driver.cpp.
 #include "hysteresis.hpp"
@@ -61,7 +63,8 @@ int main(int argc, char** argv) try {
     if(size_t(in.gcount())!=n) throw std::runtime_error("Truncated image");
 
     // Buffers reused across iterations. Allocated here so the timed loop does not allocate.
-    std::vector<float> blur(n), mag(n), angle(n), suppressed(n);
+    std::vector<uint8_t> blur(n), bin(n);
+    std::vector<int32_t> mag_sq(n), suppressed(n);
     std::vector<size_t> queue; queue.reserve(n);
 
     // Gaussian kernel: 5x5 weights from sigma, then divided so they sum to 1.
@@ -75,6 +78,9 @@ int main(int argc, char** argv) try {
             p = p < 0 ? -p : 2 * length - 2 - p;
         return p;
     };
+    // The magnitude is squared, so the thresholds are too (rounded down, as OpenCV does).
+    const int64_t low_sq = int64_t(std::floor(double(low) * low));
+    const int64_t high_sq = int64_t(std::floor(double(high) * high));
 
     // Timed loop. Negative iterations are warmup and are not recorded.
     std::vector<std::array<double,6>> samples;
@@ -88,12 +94,12 @@ int main(int argc, char** argv) try {
             for(int j=-2;j<=2;++j) for(int k=-2;k<=2;++k)
                 value+=weights[j+2][k+2]*image[size_t(reflect(y+j,h))*w+reflect(x+k,w)];
             // Quantize blurred image to uint8, as in the OpenCV baseline.
-            blur[size_t(y)*w+x]=std::clamp(std::floor(value+0.5f),0.0f,255.0f);
+            blur[size_t(y)*w+x]=uint8_t(std::clamp(std::floor(value+0.5f),0.0f,255.0f));
         }
         t[1]=Clock::now();
 
-        // Part 2: the vector Sobel kernel. Reads blur. Writes mag and angle (0/45/90/135).
-        sobel_kernel(w, h, blur.data(), mag.data(), angle.data());
+        // Part 2: the integer vector Sobel kernel. Reads blur. Writes mag_sq and bin (0/45/90/135).
+        sobel_kernel(w, h, blur.data(), mag_sq.data(), bin.data());
         t[2]=Clock::now();
 
         // Part 3. Suppress gradient pixels that are not a ridge along their direction.
@@ -106,8 +112,8 @@ int main(int argc, char** argv) try {
             for (int x = 1; x < w - 1; ++x) {
                 // Row-major index of this interior pixel.
                 size_t i = size_t(y) * w + x;
-                // Direction, in degrees, that part 2 wrote into angle for this pixel.
-                float d = angle[i];
+                // Direction bin, in degrees (0, 45, 90 or 135), that part 2 wrote for this pixel.
+                int d = bin[i];
                 // One neighbor along the gradient. The branch below chooses which pixel.
                 size_t a;
                 // The neighbor on the opposite side of the gradient.
@@ -133,14 +139,14 @@ int main(int argc, char** argv) try {
 
                 // Read the three magnitudes. Keep this one only when it is strictly above a
                 // and at least b. That writes suppressed[i]. Otherwise the 0 from the fill remains.
-                if (mag[i] > mag[a] && mag[i] >= mag[b])
-                    suppressed[i] = mag[i];
+                if (mag_sq[i] > mag_sq[a] && mag_sq[i] >= mag_sq[b])
+                    suppressed[i] = mag_sq[i];
             }
         }
         t[3]=Clock::now();
 
         // Double threshold: 2 = strong, 1 = weak, 0 = rejected.
-        for(size_t i=0;i<n;++i) labels[i]=suppressed[i]>high?2:(suppressed[i]>low?1:0);
+        for(size_t i=0;i<n;++i) labels[i]=suppressed[i]>high_sq?2:(suppressed[i]>low_sq?1:0);
         t[4]=Clock::now();
 
         // Hysteresis: keep weak pixels that connect, through other weak pixels, to a strong edge.

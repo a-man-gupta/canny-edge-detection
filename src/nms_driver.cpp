@@ -1,145 +1,192 @@
-// Driver for the Part 3 NMS kernel, written like sobel_driver.cpp (assignment kernel_driver.c style).
-//
-// For each row width it prints, with core cycles read from the CPU's cycle counter (see below):
-//     width  pixels  pixels/cycle  correct  (cycles/pixel, GHz)
-// NMS only compares and selects (no floating-point arithmetic), so there is no FLOP count:
-// the speed is in pixels per cycle, against the peak in cycles per pixel.
-//
-// The kernel runs on 4 rows of a 6-row image (mag, angle and output all in L1: widths up to 578,
-// 14 rows of up to 2.3 KB in the 32 KB L1), so only the kernel is measured.
-// Run on a quiet core whose hyperthread sibling is idle too (make nms CORE=<n>).
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <sys/ioctl.h>
-#include <sys/syscall.h>
-#include <linux/perf_event.h>
+// Times the default integer AVX2 NMS hot loop only, with the tested 16-group
+// schedule. Hardware core cycles are mandatory. Width/pixel definitions are
+// printed explicitly.
 #include "nms_kernel.hpp"
-
-// Core cycles are counted by the CPU's own cycle counter (perf_event_open, user mode only),
-// read before and after the timed loop, as in sobel_driver.cpp: the clock moves between about
-// 2.0 and 3.0 GHz with turbo and load, so one MAX_FREQ cannot convert rdtsc to cycles.
-// rdtsc still gives the time; the clock of the run is cycles / (rdtsc ticks / BASE_FREQ).
-// If the counter cannot be opened, fall back to core cycles = rdtsc * MAX_FREQ / BASE_FREQ.
-#define MAX_FREQ 2.55
-#define BASE_FREQ 2.1
-#define REPS 200000
-#define ROWS 4   // nms_rows4 does 4 rows
-
-//timing routine for reading the time stamp counter
-static __inline__ unsigned long long rdtsc(void) {
-  unsigned hi, lo;
-  __asm__ __volatile__ ("rdtsc" : "=a"(lo), "=d"(hi));
-  return ( (unsigned long long)lo)|( ((unsigned long long)hi)<<32 );
-}
-
-//core cycle counter of this thread (user mode only). Returns -1 if not available.
-static int open_cycle_counter(void) {
-  struct perf_event_attr attr;
-  memset(&attr, 0, sizeof(attr));
-  attr.size = sizeof(attr);
-  attr.type = PERF_TYPE_HARDWARE;
-  attr.config = PERF_COUNT_HW_CPU_CYCLES;
-  attr.exclude_kernel = 1;
-  attr.exclude_hv = 1;
-  return (int)syscall(__NR_perf_event_open, &attr, 0, -1, -1, 0);
-}
-
-static unsigned long long read_cycles(int fd) {
-  unsigned long long c = 0;
-  if (fd < 0 || read(fd, &c, sizeof(c)) != sizeof(c)) return 0;
-  return c;
-}
-
-// Naive Part 3 for rows 1 .. ROWS of a (ROWS + 2)-row image: the canny_scalar.cpp loop.
-void naive(int w, const float* mag, const float* angle, float* out) {
-  for (int y = 1; y <= ROWS; ++y)
-    for (int x = 1; x != w - 1; ++x) {
-      int i = y * w + x;
-      float d = angle[i];
-      int a, b;
-      if (d < 22.5f || d >= 157.5f) { a = i - 1;     b = i + 1; }
-      else if (d < 67.5f)           { a = i - w - 1; b = i + w + 1; }
-      else if (d < 112.5f)          { a = i - w;     b = i + w; }
-      else                          { a = i - w + 1; b = i + w - 1; }
-      out[i] = (mag[i] > mag[a] && mag[i] >= mag[b]) ? mag[i] : 0.0f;
-    }
-}
-
-// 4K aliasing: a load whose address matches a recent store in the low 12 bits (same place in
-// a 4 KB page) waits for that store. The output rows are stored while the input rows are read,
-// so pick the output start (in 64-byte steps) that keeps every output row furthest, within its
-// page, from every input row. mag and angle both start on a page.
-static int out_offset(int w) {
-  int best = 0, best_dist = -1;
-  for (int off = 0; off < 4096; off += 64) {
-    int dist = 4096;
-    for (int i = 0; i < ROWS + 2; ++i)
-      for (int j = 0; j < ROWS + 2; ++j) {
-        int d = ((off + (j - i) * w * 4) % 4096 + 4096) % 4096;
-        if (d > 2048) d = 4096 - d;
-        if (d < dist) dist = d;
-      }
-    if (dist > best_dist) { best_dist = dist; best = off; }
+#include <algorithm>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <linux/perf_event.h>
+#include <random>
+#include <stdexcept>
+#include <sys/syscall.h>
+#include <unistd.h>
+#include <vector>
+static constexpr int nms_rows() { return 1; }
+static constexpr int nms_step() { return 128; }
+template <class T> struct Buffer {
+  void *base;
+  T *p;
+  Buffer(size_t n, size_t offset) {
+    if (posix_memalign(&base, 4096, n * sizeof(T) + 4096))
+      throw std::bad_alloc();
+    p = (T *)((char *)base + offset);
   }
-  return best / 4;   // in floats
-}
-
-int main(){
-  float *mag = NULL, *angle = NULL, *out, *check = NULL;
-  float *out_mem = NULL;
-  unsigned long long t0, t1, c0, c1;
-
-  int cycle_fd = open_cycle_counter();
-  if (cycle_fd < 0)
-    printf("no cycle counter (perf_event_paranoid?): cycles = rdtsc * %.2f / %.2f\n", MAX_FREQ, BASE_FREQ);
-  printf("width\t pixels\t pixels/cycle correct\t (cycles/pixel, GHz)\n");
-
-  // empty loop to warm up the CPU to its full clock before the memory set-up (as in the assignment)
-  for (volatile int i = 0; i < 300000000; i++) { }
-
-  for (int w = 66; w <= 578; w += 64){
-    int n = (ROWS + 2) * w;   // ROWS rows plus the row above and below
-    posix_memalign((void**) &mag, 4096, n * sizeof(float));
-    posix_memalign((void**) &angle, 4096, n * sizeof(float));
-    posix_memalign((void**) &out_mem, 4096, n * sizeof(float) + 4096);
-    posix_memalign((void**) &check, 64, n * sizeof(float));
-    out = out_mem + out_offset(w);
-
-    //magnitudes 0..15 (many ties) and Part 2's direction bins 0 / 45 / 90 / 135
-    for (int i = 0; i != n; ++i){
-      mag[i] = (float) (rand() % 16);
-      angle[i] = 45.0f * (float) (rand() % 4);
-      out[i] = 0.0f;
-      check[i] = 0.0f;
-    }
-
-    naive(w, mag, angle, check);
-
-    nms_rows4(mag, angle, out, w, 1, 1, w - 1);   // warm-up call
-    long pixels = (long)ROWS * (w - 2);
-
-    c0 = read_cycles(cycle_fd);
-    t0 = rdtsc();
-    for (int r = 0; r != REPS; ++r)
-      nms_rows4(mag, angle, out, w, 1, 1, w - 1);
-    t1 = rdtsc();
-    c1 = read_cycles(cycle_fd);
-
-    int correct = 1;
-    for (int i = 0; i != n; ++i)
-      correct &= (out[i] == check[i]);
-
-    double cycles = (cycle_fd >= 0) ? (double)(c1 - c0) : (double)(t1 - t0) * MAX_FREQ / BASE_FREQ;
-    double ghz = cycles / ((double)(t1 - t0) / BASE_FREQ);
-    printf("%d\t %ld\t %lf %d\t (%.3f cycles/pixel, %.2f GHz)\n", w, pixels, (double)pixels * REPS / cycles, correct,
-           cycles / ((double)pixels * REPS), ghz);
-
-    free(mag);
-    free(angle);
-    free(out_mem);
-    free(check);
+  ~Buffer() { free(base); }
+};
+struct Counter {
+  int fd = -1, other = -1, ref = -1;
+  Counter(bool raw, uint64_t event) {
+    perf_event_attr a{};
+    a.size = sizeof(a);
+    a.type = PERF_TYPE_HARDWARE;
+    a.config = PERF_COUNT_HW_CPU_CYCLES;
+    a.exclude_kernel = 1;
+    a.exclude_hv = 1;
+    a.pinned = 1;
+    a.read_format = PERF_FORMAT_GROUP | PERF_FORMAT_TOTAL_TIME_ENABLED |
+                    PERF_FORMAT_TOTAL_TIME_RUNNING;
+    fd = int(syscall(__NR_perf_event_open, &a, 0, -1, -1, 0));
+    a.pinned = 0;
+    a.type = raw ? PERF_TYPE_RAW : PERF_TYPE_HARDWARE;
+    a.config = raw ? event : uint64_t(PERF_COUNT_HW_INSTRUCTIONS);
+    other = int(syscall(__NR_perf_event_open, &a, 0, -1, fd, 0));
+    a.type = PERF_TYPE_HARDWARE;
+    a.config = PERF_COUNT_HW_REF_CPU_CYCLES;
+    ref = int(syscall(__NR_perf_event_open, &a, 0, -1, fd, 0));
+    if (fd < 0 || other < 0 || ref < 0)
+      throw std::runtime_error("perf_event_open failed");
   }
+  ~Counter() {
+    if (ref >= 0)
+      close(ref);
+    if (other >= 0)
+      close(other);
+    if (fd >= 0)
+      close(fd);
+  }
+  std::vector<uint64_t> readout() {
+    std::vector<uint64_t> b(6);
+    if (read(fd, b.data(), 48) != 48 || b[0] != 3)
+      throw std::runtime_error("counter read failed");
+    return b;
+  }
+};
+static int32_t expected(const int32_t *mag, const int16_t *bins, int stride,
+                        int row, int x) {
+  int i = (row + 1) * stride + x;
+  int d = bins[row * stride + x];
+  int delta = d == 0 ? 1 : d == 45 ? stride + 1 : d == 90 ? stride : stride - 1;
+  return mag[i] > mag[i - delta] && mag[i] >= mag[i + delta] ? mag[i] : 0;
+}
+static long check(int n, int pattern, int offset) {
+  int rows = nms_rows(), stride = n + 32;
+  size_t count = size_t(rows) * stride;
+  Buffer<int32_t> mag(size_t(rows + 2) * stride, offset), out(count, 2048);
+  Buffer<int32_t> mag2(size_t(rows + 2) * stride, offset + 32);   // same values, 32 bytes off
+  Buffer<int16_t> bins(count, 1024);   // canonical bins, for the reference
+  Buffer<uint8_t> odd(count / 8 + 64, 3072), hi(count / 8 + 64, 3584);   // the bins as direction bits
+  std::mt19937 rng(17 + n + pattern);
+  for (int i = 0; i < (rows + 2) * stride; ++i)
+    mag.p[i] = pattern == 0   ? 0
+               : pattern == 1 ? 2080800
+               : pattern == 2 ? int(rng() % 4)
+                              : int(rng() % 2080801);
+  std::copy(mag.p, mag.p + size_t(rows + 2) * stride, mag2.p);
+  for (size_t i = 0; i < count; ++i) {
+    bins.p[i] = int16_t((rng() % 4) * 45);
+    out.p[i] = -12345;
+  }
+  nms_pack_dirs(bins.p, 16, n, odd.p, hi.p);
+  nms_i32_repeat(mag.p, mag2.p, odd.p, hi.p, out.p, stride, 16, n, 3);
+  for (int r = 0; r < rows; ++r)
+    for (int x = 0; x < stride; ++x) {
+      int32_t want = x >= 16 && x < 16 + n
+                         ? expected(mag.p, bins.p, stride, r, x)
+                         : -12345;
+      if (out.p[r * stride + x] != want)
+        throw std::runtime_error("incorrect output or sentinel overwrite");
+    }
+  return long(rows) * n;
+}
+static void benchmark(int n, long reps, int samples) {
+  int rows = 1, step = nms_step();
+  if (n < step || n % step || reps < 1 || samples < 1)
+    throw std::runtime_error("width must be a positive multiple of 128; "
+                             "repetitions and samples must be positive");
+  int stride = n + 32;
+  size_t count = size_t(rows) * stride;
+  Buffer<int32_t> mag(size_t(rows + 2) * stride, 0), out(count, 2048);
+  Buffer<int32_t> mag2(size_t(rows + 2) * stride, 32);   // same values, 32 bytes off
+  Buffer<int16_t> bins(count, 1024);   // canonical bins, for the reference
+  Buffer<uint8_t> odd(count / 8 + 64, 3072), hi(count / 8 + 64, 3584);   // the bins as direction bits
+  std::mt19937 rng(42);
+  for (int i = 0; i < (rows + 2) * stride; ++i)
+    mag.p[i] = int(rng() % 2080801);
+  std::copy(mag.p, mag.p + size_t(rows + 2) * stride, mag2.p);
+  for (size_t i = 0; i < count; ++i) {
+    bins.p[i] = int16_t((rng() % 4) * 45);
+    out.p[i] = -12345;
+  }
+  nms_pack_dirs(bins.p, 16, n, odd.p, hi.p);
+  nms_i32_repeat(mag.p, mag2.p, odd.p, hi.p, out.p, stride, 16, n, 3000);
+  for (int x = 16; x < 16 + n; ++x)
+    if (out.p[x] != expected(mag.p, bins.p, stride, 0, x))
+      throw std::runtime_error("warmup output incorrect");
+  Counter ctr(false, 0);
+  std::vector<double> timings, frequencies, instructions;
+  for (int s = 0; s < samples; ++s) {
+    auto a = ctr.readout();
+    nms_i32_repeat(mag.p, mag2.p, odd.p, hi.p, out.p, stride, 16, n, reps);
+    auto b = ctr.readout();
+    if (b[1] - a[1] != b[2] - a[2])
+      throw std::runtime_error("counter multiplexing: sample rejected");
+    if (b[5] == a[5])
+      throw std::runtime_error("reference cycle counter returned zero");
+    double px = double(n) * reps;
+    timings.push_back(double(b[3] - a[3]) / px);
+    frequencies.push_back(2.1 * double(b[3] - a[3]) / double(b[5] - a[5]));
+    instructions.push_back(double(b[4] - a[4]) / px);
+  }
+  for (int x = 0; x < stride; ++x) {
+    int32_t want = (x >= 16 && x < 16 + n)
+                       ? expected(mag.p, bins.p, stride, 0, x)
+                       : -12345;
+    if (out.p[x] != want)
+      throw std::runtime_error("timed output or sentinel incorrect");
+  }
+  auto median = [](std::vector<double> a) {
+    std::sort(a.begin(), a.end());
+    size_t k = a.size() / 2;
+    return a.size() % 2 ? a[k] : (a[k - 1] + a[k]) * 0.5;
+  };
+  const double cpp = median(timings);
+  printf("%d\t%d\t%.6f\t1\t(%.6f cycles/pixel, %.2f nominal GHz, %zu bytes, "
+         "%.6f instructions/pixel)\n",
+         stride, n, 1 / cpp, cpp, median(frequencies), size_t(stride) * 16 + size_t(stride) / 4,
+         median(instructions));
+}
+int main(int argc, char **argv) try {
+  long checked = 0;
+  for (int groups : {1, 2, 3, 7, 16})
+    for (int p = 0; p < 4; ++p)
+      for (int off : {0, 4, 16, 32})
+        checked += check(groups * nms_step(), p, off);
+  if (argc > 1 && !strcmp(argv[1], "test")) {
+    printf("PASS %ld pixels including ties, extrema, directions, offsets, "
+           "sentinels\n",
+           checked);
+    return 0;
+  }
+  printf("NMS: AVX2 vectors + AVX-512VL masks, int32 squared magnitudes, 2 direction bits/pixel, 16 groups / "
+         "128 pixels per loop.\n");
+  printf("One output row; width includes 32 padding pixels. Median of samples; "
+         "setup/warmup excluded.\n");
+  printf("Core cycles from perf; nominal GHz uses core/reference cycles x 2.1. "
+         "No estimated-cycle fallback.\n");
+  printf("Pin to a quiet core and check its SMT sibling. Run make nms-count "
+         "for the compiled-code bound.\n");
+  printf("width\tpixels\tpixels/cycle\tcorrect\t(cycles/pixel, nominal GHz, "
+         "working set, instructions/pixel)\n");
+  if (argc > 1)
+    benchmark(atoi(argv[1]), argc > 2 ? atol(argv[2]) : 120000,
+              argc > 3 ? atoi(argv[3]) : 5);
+  else
+    for (int n : {128, 256, 512, 768, 1024, 1280, 1536})
+      benchmark(n, 120000, 5);
   return 0;
+} catch (const std::exception &e) {
+  fprintf(stderr, "ERROR: %s\n", e.what());
+  return 1;
 }

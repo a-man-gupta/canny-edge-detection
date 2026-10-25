@@ -3,7 +3,7 @@
 #
 #   make            build and run the driver (pinned to CORE)
 #   make assemble   write the kernel assembly to sobel_kernel.S (objdump, as in the assignment)
-#   make count      count the instructions in one loop iteration (and the peak)
+#   make count      count the Sobel loop's instructions per port and the peak
 #   make nms        build and run the Part 3 (NMS) kernel driver
 #   make nms-count  count the NMS loop's instructions and the peak of each unit
 #   make clean
@@ -15,8 +15,12 @@ CXX          = g++
 CORE         = 10
 KERNEL_FLAGS = -std=c++17 -O3 -mavx2 -mfma -ffp-contract=off \
                -mno-avx256-split-unaligned-load -mno-avx256-split-unaligned-store
-# The Sobel kernel also uses AVX-512VL/DQ: mask registers and 32 ymm registers, still 256-bit.
-SOBEL_FLAGS  = $(KERNEL_FLAGS) -mavx512f -mavx512vl -mavx512dq
+# Sobel uses AVX2 intrinsics only. GCC forward propagation adds redundant gradient
+# arithmetic; disable it for this translation unit. NMS uses the separately tested AVX2-only integer schedule.
+SOBEL_FLAGS  = -std=c++17 -O3 -mavx2 -mno-avx512f -mtune=skylake -fno-tree-vectorize -fno-tree-forwprop -fno-unroll-loops \
+               -mno-avx256-split-unaligned-load -mno-avx256-split-unaligned-store -Wall -Wextra -Wpedantic
+NMS_FLAGS    = -std=c++17 -O3 -mavx2 -mavx512f -mavx512vl -mavx512dq -mavx512bw -mtune=skylake -fno-tree-vectorize -fno-tree-slp-vectorize -fno-unroll-loops \
+               -mno-avx256-split-unaligned-load -mno-avx256-split-unaligned-store -Wall -Wextra -Wpedantic
 DRIVER_FLAGS = -std=c++17 -O3 -fno-tree-vectorize -Isrc
 EXTRA        =
 
@@ -31,31 +35,24 @@ run: clean sobel_driver.x
 
 assemble: sobel_driver.x
 	objdump -d --no-show-raw-insn -C sobel_kernel.o > sobel_kernel.S
-	@echo "wrote sobel_kernel.S (look for sobel_row)"
+	@echo "wrote sobel_kernel.S (look for sobel_i16_row)"
 
-count:
-	$(CXX) $(SOBEL_FLAGS) $(EXTRA) -DSOBEL_MARK_LOOPS -S src/sobel_kernel.cpp -o sobel_kernel_marked.s
-	@awk '/# loop .* begin/ {on=1; px=$$NF; fp=0; mask=0; other=0; next} \
-	      /# loop end/ {if (on) printf "loop of %d pixels: %d FP-unit instructions, %d mask compares (port 5), %d other vector instructions -> peak %.3f cycles/pixel\n", px, fp, mask, other, fp/2/px; on=0; next} \
-	      on && $$1 ~ /^v(add|sub|mul|sqrt|fn?m)/ {fp++; next} on && $$1 ~ /^v(cmp|ptestm)/ {mask++; next} on && $$1 ~ /^v/ {other++}' sobel_kernel_marked.s
+count: sobel_driver.x
+	python3 scripts/analyze_sobel.py sobel_kernel.o
 
-# Part 3 (NMS) kernel.
-nms: clean
-	$(CXX) $(SOBEL_FLAGS) $(EXTRA) -c src/nms_kernel.cpp -o nms_kernel.o
-	$(CXX) $(DRIVER_FLAGS) -o nms_driver.x src/nms_driver.cpp nms_kernel.o
+# Part 3: exact integer NMS, AVX2 only, 16 groups per hot-loop iteration.
+nms_driver.x: src/nms_driver.cpp src/nms_kernel.cpp src/nms_kernel.hpp Makefile
+	$(CXX) $(NMS_FLAGS) $(EXTRA) -c src/nms_kernel.cpp -o nms_kernel.o
+	$(CXX) $(DRIVER_FLAGS) -Wall -Wextra -Wpedantic -o nms_driver.x src/nms_driver.cpp nms_kernel.o
+
+nms: nms_driver.x
 	taskset -c $(CORE) ./nms_driver.x
 
-# Peak of each unit for one NMS loop iteration: loads / 2 (2 load ports), compares into a
-# mask / 1 (port 5 only), issue (all instructions) / 4. The largest is the peak.
-nms-count:
-	$(CXX) $(SOBEL_FLAGS) $(EXTRA) -DSOBEL_MARK_LOOPS -S src/nms_kernel.cpp -o nms_kernel_marked.s
-	@awk '/# loop nms begin/ {on=1; px=$$NF; n=0; cmp=0; ld=0; next} \
-	      /# loop end/ {if (on) { iss=n/4/px; p5=cmp/px; l=ld/2/px; pk=iss; if (p5>pk) pk=p5; if (l>pk) pk=l; \
-	        printf "loop of %d pixels: %d instructions, %d mask compares, %d loads\n", px, n, cmp, ld; \
-	        printf "  loads %.3f, port 5 %.3f, issue %.3f cycles/pixel -> peak %.3f cycles/pixel\n", l, p5, iss, pk }; on=0; next} \
-	      on && $$1 ~ /^v/ {n++; if ($$0 ~ /\(/ && $$NF ~ /^%ymm/) ld++} \
-	      on && $$1 ~ /^vcmp/ {cmp++} \
-	      on && $$1 ~ /^(add|sub|cmp|lea|j)/ {n++}' nms_kernel_marked.s
+nms-assemble: nms_driver.x
+	objdump -d --no-show-raw-insn -C nms_kernel.o > nms_kernel.S
+
+nms-count: nms_driver.x
+	python3 scripts/analyze_nms.py nms_driver.x
 
 clean:
 	rm -f *.x *.o *.S sobel_kernel_marked.s nms_kernel_marked.s

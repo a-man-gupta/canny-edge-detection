@@ -5,47 +5,51 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Scalar CPU Canny. The no-vectorize flags below stay as part of this reference build.
 # canny_part2 is the same pipeline with the Part 2 Sobel kernel swapped in.
 add_executable(canny_scalar src/canny_scalar.cpp)
-add_executable(canny_part2 src/canny_part2.cpp src/sobel_kernel.cpp src/sobel_image.cpp)
+add_executable(canny_part2 src/canny_part2.cpp src/sobel_kernel.cpp)
 # Part 2 benchmark in the assignment-driver style: scalar baseline vs kernel, cycles per pixel vs peak.
 add_executable(sobel_driver src/sobel_driver.cpp src/sobel_kernel.cpp)
 # Part 3 benchmark, same style.
 add_executable(nms_driver src/nms_driver.cpp src/nms_kernel.cpp)
-# AVX2 on the kernel translation unit only. canny_scalar.cpp keeps -fno-tree-vectorize
-# and does not get -mavx2. -mfma allows the kernel's explicit FMA intrinsics (gx and gy:
-# 2*dm + (a + b)); they are exact because the blur values are whole numbers.
-# -ffp-contract=off still stops the compiler from fusing anything else on its own.
-# -mno-avx256-split-unaligned-*: gcc 8's default tuning splits every unaligned 256-bit load and
-# store into two 128-bit halves (vinsertf128 / vextractf128). That is only a tuning choice, not
-# different math: turning it off keeps the same results, and removes ~50 instructions
-# and the register spills from the 32-pixel loop (measured on ece024: 2.49 -> 1.72 cycles/pixel).
-# -mavx512f -mavx512vl -mavx512dq: the Sobel kernel stays on 256-bit registers (AVX2 clock) but
-# uses mask registers for the direction bins and the 32 ymm registers AVX-512VL gives, so its
-# software-pipelined loop fits with no spills (1.51 -> 1.27 cycles/pixel on ece017-024).
+# Vector flags on the kernel translation units only; canny_scalar.cpp keeps -fno-tree-vectorize.
+# Sobel uses the tested AVX2-only flags; no AVX-512 mask registers or instructions.
 set_source_files_properties(src/sobel_kernel.cpp PROPERTIES COMPILE_FLAGS
-  "-mavx2 -mfma -mavx512f -mavx512vl -mavx512dq -ffp-contract=off -mno-avx256-split-unaligned-load -mno-avx256-split-unaligned-store")
-# NMS uses the same AVX-512VL masks (masked merge loads pick the neighbors), also 256-bit only.
+  "-mavx2 -mno-avx512f -mtune=skylake -fno-unroll-loops -mno-avx256-split-unaligned-load -mno-avx256-split-unaligned-store")
+# Avoid GCC expanding the shared gradient expressions into extra arithmetic.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  set_property(SOURCE src/sobel_kernel.cpp APPEND_STRING PROPERTY COMPILE_FLAGS " -fno-tree-forwprop")
+endif()
+# Exact integer NMS: AVX2 only, with the tested 16-group C++ schedule.
+# NMS: 256-bit AVX2 vectors plus AVX-512VL mask registers (kmovb, 1-uop masked selects); no zmm.
 set_source_files_properties(src/nms_kernel.cpp PROPERTIES COMPILE_FLAGS
-  "-mavx2 -mavx512f -mavx512vl -mavx512dq -mno-avx256-split-unaligned-load -mno-avx256-split-unaligned-store")
+  "-O3 -mavx2 -mavx512f -mavx512vl -mavx512dq -mavx512bw -mtune=skylake -fno-unroll-loops -mno-avx256-split-unaligned-load -mno-avx256-split-unaligned-store")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  set_property(SOURCE src/nms_kernel.cpp APPEND_STRING PROPERTY COMPILE_FLAGS " -fno-tree-vectorize -fno-tree-slp-vectorize")
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+  set_property(SOURCE src/nms_kernel.cpp APPEND_STRING PROPERTY COMPILE_FLAGS " -fno-vectorize -fno-slp-vectorize")
+endif()
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(canny_scalar PRIVATE -Wall -Wextra -Wpedantic)
   target_compile_options(canny_part2 PRIVATE -Wall -Wextra -Wpedantic)
   target_compile_options(sobel_driver PRIVATE -Wall -Wextra -Wpedantic)
+  target_compile_options(nms_driver PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   target_compile_options(canny_scalar PRIVATE -fno-vectorize -fno-slp-vectorize)
   target_compile_options(canny_part2 PRIVATE -fno-vectorize -fno-slp-vectorize)
   target_compile_options(sobel_driver PRIVATE -fno-vectorize -fno-slp-vectorize)
+  target_compile_options(nms_driver PRIVATE -fno-vectorize -fno-slp-vectorize)
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   target_compile_options(canny_scalar PRIVATE -fno-tree-vectorize -fno-tree-slp-vectorize)
   target_compile_options(canny_part2 PRIVATE -fno-tree-vectorize -fno-tree-slp-vectorize)
   target_compile_options(sobel_driver PRIVATE -fno-tree-vectorize -fno-tree-slp-vectorize)
+  target_compile_options(nms_driver PRIVATE -fno-tree-vectorize -fno-tree-slp-vectorize)
 endif()
-# Hysteresis connectivity test, and a bitwise Sobel check against the scalar formula.
+# Hysteresis connectivity test, and a bitwise Sobel check against the scalar OpenCV formulas.
 include(CTest)
 if(BUILD_TESTING)
   add_executable(test_hysteresis src/test_hysteresis.cpp)
   add_test(NAME hysteresis_connectivity COMMAND test_hysteresis)
-  add_executable(test_sobel_kernel src/test_sobel_kernel.cpp src/sobel_kernel.cpp src/sobel_image.cpp)
+  add_executable(test_sobel_kernel src/test_sobel_kernel.cpp src/sobel_kernel.cpp)
   if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(test_sobel_kernel PRIVATE -Wall -Wextra -Wpedantic)
   endif()

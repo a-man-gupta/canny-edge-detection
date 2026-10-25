@@ -1,170 +1,170 @@
+// Part 3 NMS kernel: exact integer non-maximum suppression, 8 pixels (int32) per group.
+//
+// Each group tests all four directions (8 compares, 4 andnot), then picks the pixel's own
+// direction with three selects (vpblendmd driven by mask registers, 1 uop each). The direction
+// comes as two bit arrays, one bit per pixel: odd = 45 or 135, hi = 90 or 135. Registers stay
+// 256-bit (ymm), so the core keeps its AVX2 clock.
+//
+// Split loads: a 32-byte load at x-1 or x+1 crosses a 64-byte cache line in one of every two
+// groups, and such loads are slow (measured: about 7% of the time). So the magnitudes come
+// twice: mag (row starts + begin on a 64-byte boundary) and mag2, the same values stored 32
+// bytes off that boundary. For each neighbor the kernel reads the copy where it does not cross:
+// even groups (x = begin + 16k) take x-1 from mag2, odd groups (x = begin + 8 + 16k) take x+1
+// from mag2; everything else comes from mag.
+//
+// Software pipelined like the schedule in docs/theoretical_peak.xlsx: the next group's loads
+// (center, the four neighbors that need their own load instruction, and its two direction
+// masks) are issued before this group's compares. The other four neighbors are loaded by the
+// compare instruction itself (memory operand), so they cost no extra instruction.
 #include "nms_kernel.hpp"
-
 #include <algorithm>
+#include <atomic>
+#include <cstdlib>
 #include <cstddef>
+#include <cstdint>
 #include <immintrin.h>
+#include <vector>
 
-// Part 3: non-maximum suppression, 8 pixels per 256-bit register, 4 rows at a time.
-//
-// Same rule as canny_scalar.cpp (Part 3), bit for bit: the kernel only compares and selects,
-// so every kept value is exactly mag[i] and every other value is 0.
-// Note: the course's stage 3 wording still has to be confirmed with staff; this follows the
-// team's scalar code.
-//
-// Input contract: angle holds Part 2's direction bins, 0, 45, 90 or 135 degrees (what the Part 2
-// kernel writes). For those values "near 0" is just d < 22.5, so the scalar test
-// d >= 157.5 is dropped. For any other angle the result can differ from the scalar code
-// (the short-row fallback below still uses the full rule).
-//
-// Instruction set: AVX2 width (ymm, 8 floats) plus the AVX-512VL mask registers, like the
-// Sobel kernel. Only 256-bit ops and no FP math, so the core keeps its full turbo clock.
-//
-// Reuse between rows: pixel (y, c) needs mag rows y-1, y, y+1 at columns c-1, c, c+1. Row y+1
-// needs rows y, y+1, y+2: two of the three are the same registers. So for 8 columns we walk
-// down 4 rows, loading only the 3 new vectors of the row below each time:
-//   loads per 4 x 8 pixels: 3 x 6 rows + 4 angle = 22, i.e. 5.5 per 8 pixels (one row at a
-//   time it is 10, and then the load ports, not the compares, are the limit).
-//
-// Per 8 pixels:
-//   1. Angle: 3 compares into masks k (the if/else chain).
-//   2. a = up-right, then masked moves of above, up-left, left overwrite the lanes whose test
-//      passed (later tests win, which is the same as the first matching if). b likewise.
-//   3. Keep test: m > a into a mask, then m >= b only in those lanes (masked compare).
-//   4. Store m with the other lanes zeroed.
-// Uops per 8 pixels: 5.5 loads, 5 compares, 6 masked moves, 1 zeroing move, 1 store, plus the
-// addresses and the loop: about 20.
-//
-// Peak (Xeon Silver 4208, Cascade Lake), cycles per pixel:
-//   compares:  5 per 8 px; compare-into-mask runs on port 5 only     -> 0.625
-//   issue:     ~20 uops per 8 px, 4 per cycle                         -> 0.625
-//   loads:     5.5 per 8 px on 2 load ports (plus cache-line splits)  -> 0.34 (~0.5)
-//   ports 0/1/5: 5 + 6 + 1 = 12 per 8 px on 3 ports                   -> 0.50
-// So the peak is 0.625 cycles/pixel (port 5 and issue together).
-// Measured with data in L1: 0.75 cycles/pixel (84% of peak); one row at a time was 0.99.
+#define INLINE static inline __attribute__((always_inline))
 
-// Markers so the op count can see one iteration. Present only with -DSOBEL_MARK_LOOPS.
-#ifdef SOBEL_MARK_LOOPS
-#define LOOP_BEGIN(pixels) __asm__ __volatile__("# loop nms begin %c0" :: "i"(pixels) : "memory")
-#define LOOP_END() __asm__ __volatile__("# loop end" ::: "memory")
-#else
-#define LOOP_BEGIN(pixels)
-#define LOOP_END()
-#endif
-
-// One group of 8 pixels, given the 3x3 neighborhood as 9 vectors (t/m/b = row above / this
-// row / row below, l/c/r = columns shifted left / center / right).
-static inline __attribute__((always_inline))
-void nms_pick8(__m256 tl, __m256 tc, __m256 tr, __m256 ml, __m256 mc, __m256 mr,
-               __m256 bl, __m256 bc, __m256 br, const float* ang, float* out,
-               __m256 deg22, __m256 deg67, __m256 deg112) {
-    // Scalar: float d = angle[i]; then the if/else chain that picks neighbors a and b:
-    //   start (135)       -> up-right, down-left
-    //   d < 112.5  (90)   -> above, below
-    //   d < 67.5   (45)   -> up-left, down-right
-    //   d < 22.5   (0)    -> left, right   (the scalar code also has d >= 157.5; no bin is)
-    const __m256 d = _mm256_loadu_ps(ang);
-    const __mmask8 lt112 = _mm256_cmp_ps_mask(d, deg112, _CMP_LT_OQ);
-    const __mmask8 lt67 = _mm256_cmp_ps_mask(d, deg67, _CMP_LT_OQ);
-    const __mmask8 lt22 = _mm256_cmp_ps_mask(d, deg22, _CMP_LT_OQ);
-
-    __m256 a = _mm256_mask_mov_ps(tr, lt112, tc);   // up-right -> above
-    a = _mm256_mask_mov_ps(a, lt67, tl);            // -> up-left
-    a = _mm256_mask_mov_ps(a, lt22, ml);            // -> left
-    __m256 b = _mm256_mask_mov_ps(bl, lt112, bc);   // down-left -> below
-    b = _mm256_mask_mov_ps(b, lt67, br);            // -> down-right
-    b = _mm256_mask_mov_ps(b, lt22, mr);            // -> right
-
-    // Scalar: if (mag[i] > mag[a] && mag[i] >= mag[b]) suppressed[i] = mag[i];  (else 0)
-    const __mmask8 gt = _mm256_cmp_ps_mask(mc, a, _CMP_GT_OQ);
-    const __mmask8 keep = _mm256_mask_cmp_ps_mask(gt, mc, b, _CMP_GE_OQ);   // only lanes in gt
-    _mm256_storeu_ps(out, _mm256_maskz_mov_ps(keep, mc));                   // other lanes 0.0f
+INLINE __m256i load(const int32_t *p) {
+  return _mm256_loadu_si256((const __m256i *)p);
+}
+// One kmovb straight from memory. GCC 8 otherwise (also for _load_mask8) loads the byte into a
+// general register first and then moves it to the mask register: two instructions instead of one.
+INLINE __mmask8 load_mask(const uint8_t *p) {
+  __mmask8 k;
+  __asm__("kmovb %1, %0" : "=k"(k) : "m"(*p));
+  return k;
 }
 
-// Columns c .. c+7 of rows y .. y+rows-1. rows is a constant at each call (4 or 1), so the
-// row loop is unrolled and the 9 vectors stay in registers (rotated by renaming, no copies).
-static inline __attribute__((always_inline))
-void nms_col8(const float* mag, const float* angle, float* out, int w, int y, int rows, int c,
-              __m256 deg22, __m256 deg67, __m256 deg112) {
-    const float* p = mag + size_t(y - 1) * w + c;   // row y-1, column c
-    __m256 tl = _mm256_loadu_ps(p - 1), tc = _mm256_loadu_ps(p), tr = _mm256_loadu_ps(p + 1);
-    p += w;
-    __m256 ml = _mm256_loadu_ps(p - 1), mc = _mm256_loadu_ps(p), mr = _mm256_loadu_ps(p + 1);
-#pragma GCC unroll 4
-    for (int r = 0; r < rows; ++r) {
-        p += w;   // the new row below
-        const __m256 bl = _mm256_loadu_ps(p - 1), bc = _mm256_loadu_ps(p), br = _mm256_loadu_ps(p + 1);
-        const size_t i = size_t(y + r) * w + c;
-        nms_pick8(tl, tc, tr, ml, mc, mr, bl, bc, br, angle + i, out + i, deg22, deg67, deg112);
-        tl = ml; tc = mc; tr = mr;   // move the window down one row
-        ml = bl; mc = bc; mr = br;
+// The loads of one group that are issued early (one group ahead).
+struct GroupLoads {
+  __m256i center;        // m[x]
+  __m256i right;         // m[x+1]
+  __m256i below_right;   // b[x+1]
+  __m256i below;         // b[x]
+  __m256i below_left;    // b[x-1]
+  __mmask8 odd, hi;      // direction bits of these 8 pixels
+};
+// Rows of the two copies: t/m/b = top/middle/bottom row of mag, t2/m2/b2 the same rows of mag2.
+struct Rows {
+  const int32_t *t, *m, *b, *t2, *m2, *b2;
+};
+INLINE GroupLoads load_group(Rows r, int x, const uint8_t *odd, const uint8_t *hi, bool even) {
+  GroupLoads g;
+  g.center = load(r.m + x);
+  g.right = load((even ? r.m : r.m2) + x + 1);
+  g.below_right = load((even ? r.b : r.b2) + x + 1);
+  g.below = load(r.b + x);
+  g.below_left = load((even ? r.b2 : r.b) + x - 1);
+  g.odd = load_mask(odd);
+  g.hi = load_mask(hi);
+  return g;
+}
+
+// Compare, select and store one group. The left / top neighbors are loaded by the compares.
+INLINE void finish_group(GroupLoads g, Rows r, int32_t *dst, int x, bool even) {
+  const int32_t *left_m = even ? r.m2 : r.m, *left_t = even ? r.t2 : r.t, *right_t = even ? r.t : r.t2;
+  // k_d: center is a local maximum along direction d (strictly above a, at least b).
+  __m256i k0 = _mm256_andnot_si256(_mm256_cmpgt_epi32(g.right, g.center),
+                                   _mm256_cmpgt_epi32(g.center, load(left_m + x - 1)));
+  __m256i k1 = _mm256_andnot_si256(_mm256_cmpgt_epi32(g.below_right, g.center),
+                                   _mm256_cmpgt_epi32(g.center, load(left_t + x - 1)));
+  __m256i k2 = _mm256_andnot_si256(_mm256_cmpgt_epi32(g.below, g.center),
+                                   _mm256_cmpgt_epi32(g.center, load(r.t + x)));
+  __m256i k3 = _mm256_andnot_si256(_mm256_cmpgt_epi32(g.below_left, g.center),
+                                   _mm256_cmpgt_epi32(g.center, load(right_t + x + 1)));
+  // 0: k0, 45: k1, 90: k2, 135: k3
+  __m256i k = _mm256_mask_blend_epi32(g.odd, _mm256_mask_blend_epi32(g.hi, k0, k2),
+                                      _mm256_mask_blend_epi32(g.hi, k1, k3));
+  _mm256_storeu_si256((__m256i *)(dst + x), _mm256_and_si256(g.center, k));
+}
+
+// One pipelined step: load group j+1 of the block, then finish group j. Returns group j+1's loads.
+// (j is a constant after inlining, so even / odd costs no instruction.)
+INLINE GroupLoads step(GroupLoads current, Rows r, int32_t *dst, int x, const uint8_t *odd,
+                       const uint8_t *hi, int j) {
+  GroupLoads next = load_group(r, x + 8 * (j + 1), odd + j + 1, hi + j + 1, (j + 1) % 2 == 0);
+  finish_group(current, r, dst, x + 8 * j, j % 2 == 0);
+  return next;
+}
+
+extern "C" __attribute__((noinline)) void
+nms_i32_repeat(const int32_t *mag, const int32_t *mag2, const uint8_t *odd, const uint8_t *hi,
+               int32_t *out, int stride, int begin, int n, long reps) {
+  const Rows r = {mag, mag + stride, mag + 2 * stride, mag2, mag2 + stride, mag2 + 2 * stride};
+  for (long pass = 0; pass < reps; ++pass) {
+    // ko, kh: this block's 16 bytes of direction bits (16 groups of 8 pixels)
+    const uint8_t *ko = odd, *kh = hi;
+    for (int x = begin; x < begin + n; x += 128, ko += 16, kh += 16) {
+      // 16 groups (128 pixels), written out so there is no inner loop. Group 15 has no next
+      // group in this block, so it is finished on its own (no loads past the block).
+      GroupLoads g = load_group(r, x, ko, kh, true);
+      g = step(g, r, out, x, ko, kh, 0);
+      g = step(g, r, out, x, ko, kh, 1);
+      g = step(g, r, out, x, ko, kh, 2);
+      g = step(g, r, out, x, ko, kh, 3);
+      g = step(g, r, out, x, ko, kh, 4);
+      g = step(g, r, out, x, ko, kh, 5);
+      g = step(g, r, out, x, ko, kh, 6);
+      g = step(g, r, out, x, ko, kh, 7);
+      g = step(g, r, out, x, ko, kh, 8);
+      g = step(g, r, out, x, ko, kh, 9);
+      g = step(g, r, out, x, ko, kh, 10);
+      g = step(g, r, out, x, ko, kh, 11);
+      g = step(g, r, out, x, ko, kh, 12);
+      g = step(g, r, out, x, ko, kh, 13);
+      g = step(g, r, out, x, ko, kh, 14);
+      finish_group(g, r, out, x + 120, false);
     }
+    // Compiler barrier only, in C++: ensure every pass executes; no CPU fence
+    // instruction.
+    std::atomic_signal_fence(std::memory_order_seq_cst);
+  }
 }
 
-// Columns x_begin .. x_limit-1 of `rows` rows from y: steps of 8, the last group ending on the
-// last column (it overlaps columns already written and stores the same values). Rows with
-// fewer than 8 interior pixels are left to the scalar code. Returns the first column not written.
-static inline __attribute__((always_inline))
-int nms_block(const float* mag, const float* angle, float* out, int w, int y, int rows,
-              int x_begin, int x_limit) {
-    // Direction thresholds, the same numbers as the scalar if/else chain.
-    const __m256 deg22 = _mm256_set1_ps(22.5f);
-    const __m256 deg67 = _mm256_set1_ps(67.5f);
-    const __m256 deg112 = _mm256_set1_ps(112.5f);
-
-    int x = x_begin;
-    for (; x + 8 <= x_limit; x += 8) {
-        LOOP_BEGIN(8 * rows);
-        nms_col8(mag, angle, out, w, y, rows, x, deg22, deg67, deg112);
-        LOOP_END();
+// Full-image entry point consumes the public Sobel output (int32 magnitude
+// squares, uint8 direction bins). Packing the bins into direction bits and
+// arbitrary-width tails are outside the hot loop.
+void nms_kernel(int w, int h, const int32_t *mag, const uint8_t *bin,
+                int32_t *out) {
+  if (w <= 0 || h <= 0)
+    return;
+  std::fill(out, out + size_t(w) * h, int32_t(0));
+  if (w < 3 || h < 3)
+    return;
+  const int vector_pixels = ((w - 2) / 128) * 128;
+  // The two copies the hot loop needs: row stride a multiple of 16 values, pixel x of a row at
+  // index 15 + x, so pixel 1 (the first group) starts on a 64-byte boundary in copy 1 and 32
+  // bytes off it in copy 2.
+  const int stride = (w + 15 + 15) / 16 * 16;
+  int32_t *copy1 = nullptr, *copy2 = nullptr;
+  if (vector_pixels) {
+    copy1 = static_cast<int32_t *>(std::aligned_alloc(64, size_t(stride) * h * 4 + 64));
+    copy2 = static_cast<int32_t *>(std::aligned_alloc(64, size_t(stride) * h * 4 + 128));
+    for (int y = 0; y < h; ++y)
+      for (int x = 0; x < w; ++x) {
+        copy1[size_t(y) * stride + 15 + x] = mag[size_t(y) * w + x];
+        copy2[8 + size_t(y) * stride + 15 + x] = mag[size_t(y) * w + x];
+      }
+  }
+  std::vector<uint8_t> row_odd(vector_pixels / 8 + 1), row_hi(vector_pixels / 8 + 1);
+  for (int y = 1; y < h - 1; ++y) {
+    const size_t row = size_t(y) * w;
+    if (vector_pixels) {
+      nms_pack_dirs(bin + row, 1, vector_pixels, row_odd.data(), row_hi.data());
+      const size_t top = size_t(y - 1) * stride + 15;
+      nms_i32_repeat(copy1 + top, copy2 + 8 + top, row_odd.data(), row_hi.data(), out + row,
+                     stride, 1, vector_pixels, 1);
     }
-    if (x_limit - x_begin < 8 || x == x_limit)
-        return x;
-    nms_col8(mag, angle, out, w, y, rows, x_limit - 8, deg22, deg67, deg112);
-    return x_limit;
-}
-
-int nms_rows4(const float* mag, const float* angle, float* out, int w, int y, int x_begin, int x_limit) {
-    return nms_block(mag, angle, out, w, y, 4, x_begin, x_limit);
-}
-
-// One row (the 1-3 rows left after the blocks of 4): 10 loads per 8 pixels instead of 5.5.
-static int nms_row1(const float* mag, const float* angle, float* out, int w, int y, int x_begin, int x_limit) {
-    return nms_block(mag, angle, out, w, y, 1, x_begin, x_limit);
-}
-
-// One interior pixel, exactly the scalar code (used for rows too short for the vector loop).
-static float nms_scalar_at(const float* mag, const float* angle, int w, size_t i) {
-    float d = angle[i];
-    size_t a, b;
-    if (d < 22.5f || d >= 157.5f) {
-        a = i - 1;
-        b = i + 1;
-    } else if (d < 67.5f) {
-        a = i - w - 1;
-        b = i + w + 1;
-    } else if (d < 112.5f) {
-        a = i - w;
-        b = i + w;
-    } else {
-        a = i - w + 1;
-        b = i + w - 1;
+    for (int x = 1 + vector_pixels; x < w - 1; ++x) {
+      const size_t i = row + x;
+      const int d = bin[i];
+      const int delta = d == 0 ? 1 : d == 45 ? w + 1 : d == 90 ? w : w - 1;
+      out[i] = mag[i] > mag[i - delta] && mag[i] >= mag[i + delta] ? mag[i] : 0;
     }
-    return (mag[i] > mag[a] && mag[i] >= mag[b]) ? mag[i] : 0.f;
-}
-
-// Whole image. The border (first and last rows and columns) stays 0, like the scalar code.
-void nms_kernel(int w, int h, const float* mag, const float* angle, float* suppressed) {
-    std::fill(suppressed, suppressed + size_t(w) * h, 0.f);
-    int y = 1;
-    for (; y + 4 <= h - 1; y += 4) {
-        const int x = nms_rows4(mag, angle, suppressed, w, y, 1, w - 1);
-        for (int r = y; r < y + 4; ++r)
-            for (int c = x; c < w - 1; ++c)
-                suppressed[size_t(r) * w + c] = nms_scalar_at(mag, angle, w, size_t(r) * w + c);
-    }
-    for (; y < h - 1; ++y) {
-        const int x = nms_row1(mag, angle, suppressed, w, y, 1, w - 1);
-        for (int c = x; c < w - 1; ++c)
-            suppressed[size_t(y) * w + c] = nms_scalar_at(mag, angle, w, size_t(y) * w + c);
-    }
+  }
+  std::free(copy1);
+  std::free(copy2);
 }

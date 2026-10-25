@@ -1,24 +1,23 @@
 #pragma once
 
-#include <cstddef>
+#include <cstdint>
 
-// Part 2 kernel (AVX2 + FMA math, AVX-512VL mask registers, 8 pixels per ymm register).
-// The scalar reference in canny_scalar.cpp stays inline.
-// Reads blur, a row-major width*height image of whole numbers 0..255 (the pipeline's
-// rounded blur). Writes mag (gradient strength) and angle.
-// angle is one of 0, 45, 90, 135 from the OpenCV-style sector test, not an atan2 result.
-// Pixels exactly on a bin boundary can disagree with canny_scalar.
-void sobel_kernel(int w, int h,
-                  const float* __restrict blur,
-                  float* __restrict mag,
-                  float* __restrict angle);
+// Part 2 kernel (sobel_kernel.cpp), integer: the same numbers as OpenCV's Canny with
+// apertureSize=3 and L2gradient=true.
+//   blur:   uint8 image (what cv2.GaussianBlur gives for a uint8 input), row-major, width w.
+//   mag_sq: int32 gx*gx + gy*gy. OpenCV never takes the square root: it squares the two thresholds
+//           instead, so the double-threshold stage must compare against low*low and high*high.
+//   bin:    uint8 direction bin 0, 45, 90 or 135, from OpenCV's integer test (TG22 = 13573).
+// Border pixels repeat the nearest edge pixel (OpenCV's BORDER_REPLICATE for the Sobel step).
+void sobel_kernel(int w, int h, const uint8_t* blur, int32_t* mag_sq, uint8_t* bin);
 
-// The vector loop for one interior row (used by sobel_kernel and timed alone by sobel_driver).
-// top/mid/bot are blur rows y-1, y, y+1. Writes columns from x_begin in blocks of 32 pixels,
-// then 8, never reading past column x_limit. Rows shorter than 8 are left to the scalar code.
-// Returns the first column not written.
-int sobel_row(const float* top, const float* mid, const float* bot,
-              float* mag_row, float* angle_row, int x_begin, int x_limit);
+// Spill-free AVX2 row kernel, also timed directly by sobel_driver.
+// Inputs are int16 values in 0..255; output bins are int16 values 0/45/90/135.
+// Writes [begin,end), with a readable one-pixel halo on either side.
+// Buffers must not overlap. Empty ranges and arbitrary tails are supported.
+// Main loop: 64 pixels (unrolled by hand), AVX2 YMM registers only; guards/fill/drain/tails are outside it.
+void sobel_i16_row(const int16_t* top, const int16_t* mid, const int16_t* bot,
+                   int32_t* mag_sq_row, int16_t* bin_row, int begin, int end);
 
-// Scalar version of the direction bin. Returns 0, 45, 90, or 135.
-float sobel_classify_angle(float gx, float gy);
+// Scalar direction bin, exactly OpenCV's test. Returns 0, 45, 90 or 135.
+uint8_t sobel_bin(int gx, int gy);

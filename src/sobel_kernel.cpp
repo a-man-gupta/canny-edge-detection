@@ -1,192 +1,214 @@
-// Part 2 Sobel kernel: gradient magnitude and direction bin for one image row.
+// Part 2 Sobel kernel, AVX2 integer (int16 pixels, 16 per ymm register).
 //
-// 8 pixels per ymm register (256-bit). Uses AVX2 + FMA for the math and AVX-512VL/DQ for
-// mask registers (k) and 32 ymm registers. It stays on 256-bit registers, so the core keeps
-// the AVX2 clock (512-bit zmm code drops to about 2/3 of it on this Xeon).
-// Compile with -mavx2 -mfma -mavx512f -mavx512vl -mavx512dq -ffp-contract=off.
-//
-// Measured on ece017-024 (Xeon Silver 4208), real core cycles, 1026-wide row in L1:
-//   1.16-1.18 cycles/pixel. Peak 0.8125 (13 FP-unit instructions per 8 pixels / 2 FP units).
-//   The same loop with the direction test as 2 FMAs ran at 1.27-1.30, and the earlier
-//   one-stage AVX2 loop with vblendvps at 1.51.
+// Each group of 16 pixels goes through four steps:
+//   1. load_and_subtract: 8 neighbor loads and the 4 shared differences
+//   2. combine:           gx and gy from the differences
+//   3. store_magnitude:   gx*gx + gy*gy (stored) and the first half of the direction test
+//   4. finish_direction:  the 0 / 45 / 90 / 135 degree bin (stored)
+// The loop is software pipelined like the schedule in docs/theoretical_peak.xlsx: while group g
+// is in steps 3 and 4, group g+1 already does steps 1 and 2, so its loads (7 cycles) are done
+// by the time the vector ALU needs them.
 #include "sobel_kernel.hpp"
-
-#include <cmath>
+#include <algorithm>
+#include <cstddef>
+#include <cstdlib>
 #include <immintrin.h>
+#include <vector>
 
+#define INLINE static inline __attribute__((always_inline))
 
-// Sector test on squares: gy^2 < gx^2 * tan(22.5)^2 is |gy| < |gx| * tan(22.5) without the
-// absolute values (gx*gx and gy*gy are already computed for the magnitude, and are exact
-// because blur values are whole numbers). With t = tan(22.5)^2 = 3 - 2*sqrt(2) and
-// s = gx^2 + gy^2 (also computed for the magnitude):
-//   gy^2 < gx^2 * t   <=>   gy^2 < s * t / (1 + t)
-// So one product p = s * c serves both tests (gy^2 < p, gx^2 < p): 1 multiply instead of 2 FMAs.
-// Checked for every integer pair |gx|, |gy| <= 1020 (all Sobel values of 0..255 blur):
-// the bins are identical to the FMA form fma(-gx^2, t, gy^2) < 0.
-static const float kSectorC = static_cast<float>((3.0 - 2.0 * std::sqrt(2.0)) / (4.0 - 2.0 * std::sqrt(2.0)));
-
-// Markers so scripts/count_sobel_ops.sh can see one iteration.
-// Present only with -DSOBEL_MARK_LOOPS. The normal build has none.
-#ifdef SOBEL_MARK_LOOPS
-#define LOOP_BEGIN(pixels) __asm__ __volatile__("# loop kernel begin %c0" :: "i"(pixels) : "memory")
-#define LOOP_END() __asm__ __volatile__("# loop end" ::: "memory")
-#else
-#define LOOP_BEGIN(pixels)
-#define LOOP_END()
-#endif
-
-// Scalar direction bin. Borders use this. Same four tests as the vector path.
-float sobel_classify_angle(float gx, float gy) {
-    float gx2 = gx * gx;
-    float gy2 = gy * gy;
-    float p = (gx2 + gy2) * kSectorC;      // the same rounding as the vector code
-    if (gy2 < p)                           // gy^2 < gx^2 * tan^2: horizontal
-        return 0.f;
-    if (gx2 < p)                           // gx^2 < gy^2 * tan^2: vertical
-        return 90.f;
-    if (std::signbit(gx) == std::signbit(gy))
-        return 45.f;
-    return 135.f;
+INLINE __m256i load16(const int16_t *pixels) {
+    return _mm256_loadu_si256((const __m256i *)pixels);
+}
+static inline int16_t direction(int gx, int gy) {
+    int x = std::abs(gx);
+    int y = std::abs(gy) * 32768;
+    if (y < x * 13573)
+        return 0;
+    if (y > x * 13573 + x * 65536)
+        return 90;
+    return (gx < 0) != (gy < 0) ? 135 : 45;
 }
 
-// Helpers are pasted into the loop (always_inline), never called.
-#define ALWAYS_INLINE static inline __attribute__((always_inline))
-
-// gx and gy for the 8 pixels at columns c .. c+7.
-// Scalar: gx = -tl + tr - 2*ml + 2*mr - bl + br
-//         gy = -tl - 2*tm - tr + bl + 2*bm + br
-// (t/m/b = row above / this row / row below, l/r = one column left / right)
-ALWAYS_INLINE void gradients8(const float* top, const float* mid, const float* bot, int c,
-                              __m256 two, __m256& gx, __m256& gy) {
-    const __m256 a  = _mm256_sub_ps(_mm256_loadu_ps(bot + c + 1), _mm256_loadu_ps(top + c - 1));   // br - tl
-    const __m256 b  = _mm256_sub_ps(_mm256_loadu_ps(top + c + 1), _mm256_loadu_ps(bot + c - 1));   // tr - bl
-    const __m256 dm = _mm256_sub_ps(_mm256_loadu_ps(mid + c + 1), _mm256_loadu_ps(mid + c - 1));   // mr - ml
-    const __m256 dv = _mm256_sub_ps(_mm256_loadu_ps(bot + c), _mm256_loadu_ps(top + c));           // bm - tm
-    gx = _mm256_fmadd_ps(dm, two, _mm256_add_ps(a, b));   // gx = 2*(mr - ml) + (br - tl) + (tr - bl)
-    gy = _mm256_fmadd_ps(dv, two, _mm256_sub_ps(a, b));   // gy = 2*(bm - tm) + (br - tl) - (tr - bl)
+// Step 1: the four neighbor differences of 16 pixels starting at x.
+struct Differences {
+    __m256i diagonal_down;  // bottom-right - top-left
+    __m256i diagonal_up;    // top-right - bottom-left
+    __m256i horizontal;     // right - left
+    __m256i vertical;       // bottom - top
+};
+INLINE Differences load_and_subtract(const int16_t *top, const int16_t *middle, const int16_t *bottom,
+                                     int x) {
+    // One statement per load so the compiler keeps this order (left load, then right load).
+    Differences d;
+    d.diagonal_down = load16(bottom + x + 1);
+    d.diagonal_down = _mm256_sub_epi16(d.diagonal_down, load16(top + x - 1));
+    d.diagonal_up = load16(top + x + 1);
+    d.diagonal_up = _mm256_sub_epi16(d.diagonal_up, load16(bottom + x - 1));
+    d.horizontal = load16(middle + x + 1);
+    d.horizontal = _mm256_sub_epi16(d.horizontal, load16(middle + x - 1));
+    d.vertical = load16(bottom + x);
+    d.vertical = _mm256_sub_epi16(d.vertical, load16(top + x));
+    return d;
 }
 
-// Magnitude and direction for 8 pixels, then both stores.
-ALWAYS_INLINE void finish8(__m256 gx, __m256 gy, float* mag, float* angle, __m256 sectorc) {
-    // Scalar: mag[i] = sqrt(gx*gx + gy*gy)
-    const __m256 gxx = _mm256_mul_ps(gx, gx);
-    const __m256 gyy = _mm256_mul_ps(gy, gy);
-    const __m256 s = _mm256_add_ps(gxx, gyy);
-    _mm256_storeu_ps(mag, _mm256_sqrt_ps(s));
-
-    // Scalar: angle[i] = sobel_classify_angle(gx, gy). Each test gives a mask, one bit per pixel.
-    // A compare into a mask register runs on port 5 and a masked move is 1 uop, so ports 0 and 1
-    // (the FP units) keep the math. vblendvps would be 2 uops that compete for ports 0 and 1.
-    const __m256 zero = _mm256_setzero_ps();
-    const __m256 p = _mm256_mul_ps(s, sectorc);
-    const __mmask8 horiz = _mm256_cmp_ps_mask(gyy, p, _CMP_LT_OQ);   // gy^2 < s*c
-    const __mmask8 vert  = _mm256_cmp_ps_mask(gxx, p, _CMP_LT_OQ);   // gx^2 < s*c
-    const __mmask8 differ = _mm256_test_epi32_mask(_mm256_castps_si256(_mm256_xor_ps(gx, gy)),
-                                                   _mm256_set1_epi32(0x80000000));                 // sign of gx xor gy
-
-    __m256 bin = _mm256_mask_blend_ps(differ, _mm256_set1_ps(45.f), _mm256_set1_ps(135.f));  // signs differ -> 135, else 45
-    bin = _mm256_mask_blend_ps(vert, bin, _mm256_set1_ps(90.f));                              // vertical -> 90
-    bin = _mm256_mask_blend_ps(horiz, bin, zero);                                             // horizontal -> 0
-    _mm256_storeu_ps(angle, bin);
+// Step 2: gx = (down + up) + 2*horizontal, gy = (down - up) + 2*vertical.
+struct Gradients {
+    __m256i gx;
+    __m256i gy;
+};
+INLINE Gradients combine(Differences d) {
+    Gradients g;
+    g.gx = _mm256_add_epi16(d.diagonal_down, d.diagonal_up);
+    g.gx = _mm256_add_epi16(g.gx, _mm256_add_epi16(d.horizontal, d.horizontal));
+    g.gy = _mm256_sub_epi16(d.diagonal_down, d.diagonal_up);
+    g.gy = _mm256_add_epi16(g.gy, _mm256_add_epi16(d.vertical, d.vertical));
+    return g;
 }
 
-// One interior row, columns x_begin .. x_limit-1. Returns the first column not written.
-//
-// Why the loop is shaped like this:
-//   One group of 8 pixels is one long dependency chain, about 40 cycles:
-//       loads -> 4 sub -> add -> FMA -> mul -> add -> sqrt (12) -> store
-//                                       add -> mul -> compare -> 3 blends -> store
-//   An instruction waiting for its inputs sits in the scheduler (97 entries), and when the
-//   scheduler is full the core cannot look further ahead for independent work.
-//   So the loop is software-pipelined: it computes the gradients of the NEXT 32 pixels while
-//   it finishes the current 32. The finish instructions then find their inputs ready.
-//
-//   Blocks of 32 pixels = four groups of 8 (A, B, C, D). Two register sets: g (current block)
-//   and n (next block), 16 ymm registers. AVX-512VL has 32 ymm registers, so both sets and the
-//   temporaries fit with no spills. One iteration does two blocks and the sets swap roles,
-//   so there are no register copies at the end of an iteration:
-//
-//     before the loop:  g = gradients(block 0)
-//     iteration:        n = gradients(block 1)   while finishing g (block 0)
-//                       g = gradients(block 2)   while finishing n (block 1)
-//     after the loop:   one more pipelined block if two are left, then finish g
-//
-//   Inside each half the groups alternate: gradients of next A, finish of current A,
-//   gradients of next B, finish of current B, ...
-//
-// The last 8..31 pixels: groups of 8, then one group of 8 that ends on the last column
-// (it overlaps columns already written and stores the same values). Rows shorter than 8
-// are left to the scalar code.
-int sobel_row(const float* top, const float* mid, const float* bot,
-              float* mag_row, float* angle_row, int x_begin, int x_limit) {
-    // Constants, kept in registers for the whole row.
-    const __m256 two = _mm256_set1_ps(2.0f);
-    const __m256 sectorc = _mm256_set1_ps(kSectorC);
+// Step 3: store gx*gx + gy*gy (int32) and start the direction test.
+struct DirectionTest {
+    __m256i abs_low, abs_high;    // (|gx|, |gy|) pairs
+    __m256i test_low, test_high;  // 13573*|gx| - 32768*|gy|
+    __m256i opposite_signs;       // all ones where gx and gy have opposite signs
+};
+INLINE DirectionTest store_magnitude(Gradients g, int32_t *magnitude_sq, int x) {
+    // Packed signed coefficients: 13573 for |gx|, -32768 for |gy|.
+    const __m256i direction_coefficients = _mm256_set1_epi32(int(0x80003505u));
+    // Pair each pixel: gx0, gy0, gx1, gy1, ... within 128-bit halves.
+    __m256i pairs_low = _mm256_unpacklo_epi16(g.gx, g.gy);
+    __m256i pairs_high = _mm256_unpackhi_epi16(g.gx, g.gy);
+    __m256i magnitude_low = _mm256_madd_epi16(pairs_low, pairs_low);
+    __m256i magnitude_high = _mm256_madd_epi16(pairs_high, pairs_high);
+    // Put the 128-bit halves back in pixel order and store.
+    _mm256_storeu_si256((__m256i *)(magnitude_sq + x),
+                        _mm256_permute2x128_si256(magnitude_low, magnitude_high, 0x20));
+    _mm256_storeu_si256((__m256i *)(magnitude_sq + x + 8),
+                        _mm256_permute2x128_si256(magnitude_low, magnitude_high, 0x31));
+    DirectionTest t;
+    t.abs_low = _mm256_abs_epi16(pairs_low);
+    t.abs_high = _mm256_abs_epi16(pairs_high);
+    t.test_low = _mm256_madd_epi16(t.abs_low, direction_coefficients);
+    t.test_high = _mm256_madd_epi16(t.abs_high, direction_coefficients);
+    t.opposite_signs = _mm256_srai_epi16(_mm256_xor_si256(g.gx, g.gy), 15);
+    return t;
+}
 
-    int x = x_begin;
-    if (x + 32 <= x_limit) {
-        __m256 gxA, gyA, gxB, gyB, gxC, gyC, gxD, gyD;   // current block
-        __m256 nxA, nyA, nxB, nyB, nxC, nyC, nxD, nyD;   // next block
-        gradients8(top, mid, bot, x, two, gxA, gyA);
-        gradients8(top, mid, bot, x + 8, two, gxB, gyB);
-        gradients8(top, mid, bot, x + 16, two, gxC, gyC);
-        gradients8(top, mid, bot, x + 24, two, gxD, gyD);
+// Step 4: pick 0, 45, 90 or 135 degrees and store.
+INLINE void finish_direction(DirectionTest t, int16_t *direction_bins, int x) {
+    const __m256i zero = _mm256_setzero_si256();
+    const __m256i degrees45 = _mm256_set1_epi16(45);
+    const __m256i degrees90 = _mm256_set1_epi16(90);
+    // Horizontal: 32768*|gy| < 13573*|gx|.
+    __m256i horizontal = _mm256_packs_epi32(_mm256_cmpgt_epi32(t.test_low, zero),
+                                            _mm256_cmpgt_epi32(t.test_high, zero));
+    // Vertical: 32768*|gy| > (13573 + 65536)*|gx|.
+    __m256i vertical_low = _mm256_add_epi32(t.test_low, _mm256_slli_epi32(t.abs_low, 16));
+    __m256i vertical_high = _mm256_add_epi32(t.test_high, _mm256_slli_epi32(t.abs_high, 16));
+    __m256i vertical = _mm256_packs_epi32(_mm256_cmpgt_epi32(zero, vertical_low),
+                                          _mm256_cmpgt_epi32(zero, vertical_high));
+    // Diagonal: 45 when gx and gy have the same sign, 45 + 90 when not.
+    __m256i bins = _mm256_add_epi16(degrees45, _mm256_and_si256(t.opposite_signs, degrees90));
+    bins = _mm256_blendv_epi8(bins, degrees90, vertical);
+    bins = _mm256_andnot_si256(horizontal, bins);
+    _mm256_storeu_si256((__m256i *)(direction_bins + x), bins);
+}
 
-        for (; x + 96 <= x_limit; x += 64) {
-            LOOP_BEGIN(64);
-            // n = block at x+32, finish g = block at x
-            gradients8(top, mid, bot, x + 32, two, nxA, nyA);
-            finish8(gxA, gyA, mag_row + x, angle_row + x, sectorc);
-            gradients8(top, mid, bot, x + 40, two, nxB, nyB);
-            finish8(gxB, gyB, mag_row + x + 8, angle_row + x + 8, sectorc);
-            gradients8(top, mid, bot, x + 48, two, nxC, nyC);
-            finish8(gxC, gyC, mag_row + x + 16, angle_row + x + 16, sectorc);
-            gradients8(top, mid, bot, x + 56, two, nxD, nyD);
-            finish8(gxD, gyD, mag_row + x + 24, angle_row + x + 24, sectorc);
-            // g = block at x+64, finish n = block at x+32
-            gradients8(top, mid, bot, x + 64, two, gxA, gyA);
-            finish8(nxA, nyA, mag_row + x + 32, angle_row + x + 32, sectorc);
-            gradients8(top, mid, bot, x + 72, two, gxB, gyB);
-            finish8(nxB, nyB, mag_row + x + 40, angle_row + x + 40, sectorc);
-            gradients8(top, mid, bot, x + 80, two, gxC, gyC);
-            finish8(nxC, nyC, mag_row + x + 48, angle_row + x + 48, sectorc);
-            gradients8(top, mid, bot, x + 88, two, gxD, gyD);
-            finish8(nxD, nyD, mag_row + x + 56, angle_row + x + 56, sectorc);
-            LOOP_END();
+// One pipelined step: finish the group at x (its gradients are `current`) and start the group at
+// x + 16. Returns the new group's gradients.
+INLINE Gradients step(const int16_t *top, const int16_t *middle, const int16_t *bottom, Gradients current,
+                      int32_t *magnitude_sq, int16_t *direction_bins, int x) {
+    Differences next = load_and_subtract(top, middle, bottom, x + 16);  // next group: loads first
+    DirectionTest test = store_magnitude(current, magnitude_sq, x);     // this group: multiplies
+    Gradients next_gradients = combine(next);                           // next group: adds
+    finish_direction(test, direction_bins, x);                          // this group: compares
+    return next_gradients;
+}
+
+__attribute__((noinline)) void sobel_i16_row(const int16_t *top, const int16_t *middle, const int16_t *bottom,
+                                             int32_t *magnitude_sq, int16_t *direction_bins, int begin,
+                                             int end) {
+    int x = begin;
+    if (x + 16 <= end) {
+        Gradients current = combine(load_and_subtract(top, middle, bottom, x));
+        // Main loop: 4 groups (64 pixels) per iteration, written out so there is no inner loop.
+        for (; x + 80 <= end; x += 64) {
+            current = step(top, middle, bottom, current, magnitude_sq, direction_bins, x);
+            current = step(top, middle, bottom, current, magnitude_sq, direction_bins, x + 16);
+            current = step(top, middle, bottom, current, magnitude_sq, direction_bins, x + 32);
+            current = step(top, middle, bottom, current, magnitude_sq, direction_bins, x + 48);
         }
+        // Leftover groups, one at a time; the last group has no next group to start.
+        for (; x + 32 <= end; x += 16)
+            current = step(top, middle, bottom, current, magnitude_sq, direction_bins, x);
+        finish_direction(store_magnitude(current, magnitude_sq, x), direction_bins, x);
+        x += 16;
+    }
+    for (; x < end; ++x) {
+        int gx =
+            -top[x - 1] + top[x + 1] - 2 * middle[x - 1] + 2 * middle[x + 1] - bottom[x - 1] + bottom[x + 1];
+        int gy = -top[x - 1] - 2 * top[x] - top[x + 1] + bottom[x - 1] + 2 * bottom[x] + bottom[x + 1];
+        magnitude_sq[x] = gx * gx + gy * gy;
+        direction_bins[x] = direction(gx, gy);
+    }
+}
 
-        // One more pipelined block if two full blocks are left.
-        if (x + 64 <= x_limit) {
-            gradients8(top, mid, bot, x + 32, two, nxA, nyA);
-            finish8(gxA, gyA, mag_row + x, angle_row + x, sectorc);
-            gradients8(top, mid, bot, x + 40, two, nxB, nyB);
-            finish8(gxB, gyB, mag_row + x + 8, angle_row + x + 8, sectorc);
-            gradients8(top, mid, bot, x + 48, two, nxC, nyC);
-            finish8(gxC, gyC, mag_row + x + 16, angle_row + x + 16, sectorc);
-            gradients8(top, mid, bot, x + 56, two, nxD, nyD);
-            finish8(gxD, gyD, mag_row + x + 24, angle_row + x + 24, sectorc);
-            gxA = nxA; gyA = nyA; gxB = nxB; gyB = nyB;
-            gxC = nxC; gyC = nyC; gxD = nxD; gyD = nyD;
-            x += 32;
-        }
+uint8_t sobel_bin(int gx, int gy) {
+    return uint8_t(direction(gx, gy));
+}
 
-        // Finish the last loaded block.
-        finish8(gxA, gyA, mag_row + x, angle_row + x, sectorc);
-        finish8(gxB, gyB, mag_row + x + 8, angle_row + x + 8, sectorc);
-        finish8(gxC, gyC, mag_row + x + 16, angle_row + x + 16, sectorc);
-        finish8(gxD, gyD, mag_row + x + 24, angle_row + x + 24, sectorc);
-        x += 32;
+// One pixel with the edge repeated outside the image (OpenCV's BORDER_REPLICATE).
+// Inlined into sobel_kernel, so the border path is not a separate call.
+static inline __attribute__((always_inline)) void scalar_at(const uint8_t *blur, int w, int h, int y, int x,
+                                                            int32_t *mag_sq, uint8_t *bin) {
+    auto s = [&](int j, int k) {
+        int yy = y + j, xx = x + k;
+        yy = yy < 0 ? 0 : (yy >= h ? h - 1 : yy);
+        xx = xx < 0 ? 0 : (xx >= w ? w - 1 : xx);
+        return (int)blur[(size_t)yy * w + xx];
+    };
+    const int gx = -s(-1, -1) + s(-1, 1) - 2 * s(0, -1) + 2 * s(0, 1) - s(1, -1) + s(1, 1);
+    const int gy = -s(-1, -1) - 2 * s(-1, 0) - s(-1, 1) + s(1, -1) + 2 * s(1, 0) + s(1, 1);
+    const size_t i = (size_t)y * w + x;
+    mag_sq[i] = gx * gx + gy * gy;
+    bin[i] = sobel_bin(gx, gy);
+}
+
+void sobel_kernel(int w, int h, const uint8_t *blur, int32_t *mag_sq, uint8_t *bin) {
+    if (w <= 0 || h <= 0)
+        return;
+    // Right-pad every row out to a multiple of 64 interior columns, repeating the last pixel
+    // (the same value BORDER_REPLICATE would return). The vector loop then writes
+    // columns 1 .. n_pad and has nothing left over. Columns past w-2 are discarded; the real
+    // border pixels stay on the scalar path. A 3x3 at columns 1 .. w-2 never reads the pad.
+    const int n = w > 2 ? w - 2 : 0;
+    const int n_pad = (n + 63) & ~63;
+    const int stride = n_pad + 2; // last load of the final group stops on index n_pad + 1
+    std::vector<int16_t> pad(size_t(stride) * h);
+    std::vector<int32_t> mag_pad(size_t(stride) * h);
+    std::vector<int16_t> bin_pad(size_t(stride) * h);
+    for (int y = 0; y < h; ++y) {
+        int16_t *dst = pad.data() + size_t(y) * stride;
+        const uint8_t *src = blur + size_t(y) * w;
+        std::copy(src, src + w, dst);
+        std::fill(dst + w, dst + stride, src[w - 1]);
     }
 
-    // Leftover pixels, one group of 8 at a time.
-    if (x_limit - x_begin < 8)
-        return x;
-    while (x < x_limit) {
-        const int c = (x + 8 <= x_limit) ? x : x_limit - 8;   // the last group may overlap
-        __m256 gx, gy;
-        gradients8(top, mid, bot, c, two, gx, gy);
-        finish8(gx, gy, mag_row + c, angle_row + c, sectorc);
-        x = c + 8;
+    for (int y = 0; y < h; ++y) {
+        if (y == 0 || y == h - 1 || n_pad == 0) {
+            for (int x = 0; x < w; ++x)
+                scalar_at(blur, w, h, y, x, mag_sq, bin);
+            continue;
+        }
+        scalar_at(blur, w, h, y, 0, mag_sq, bin);
+        scalar_at(blur, w, h, y, w - 1, mag_sq, bin);
+        const size_t prow = size_t(y) * stride;
+        sobel_i16_row(pad.data() + prow - stride, pad.data() + prow, pad.data() + prow + stride,
+                      mag_pad.data() + prow, bin_pad.data() + prow, 1, n_pad + 1);
+        const size_t row = size_t(y) * w;
+        for (int x = 1; x < w - 1; ++x) {
+            mag_sq[row + x] = mag_pad[prow + x];
+            bin[row + x] = bin_pad[prow + x];
+        }
     }
-    return x;
 }
