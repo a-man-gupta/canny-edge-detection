@@ -1,0 +1,23 @@
+# started on Sun Oct 25 20:06:18 2026
+
+
+ Performance counter stats for '../build/canny_scalar_test --input medium_1920x1080.pgm --output test.pgm --iterations 20 --warmup 2':
+
+          4,831.67 msec task-clock:u              #    0.995 CPUs utilized          
+    13,198,629,820      cycles:u                  #    2.732 GHz                      (39.95%)
+    39,417,302,103      instructions:u            #    2.99  insn per cycle           (49.96%)
+     9,692,878,822      branches:u                #    2.006 G/sec                    (49.98%)
+         5,308,142      branch-misses:u           #    0.05% of all branches          (50.00%)
+        25,351,242      cache-references:u        #    5.247 M/sec                    (50.04%)
+        20,929,146      cache-misses:u            #   82.557 % of all cache refs      (50.06%)
+     4,446,497,413      L1-dcache-loads:u         #  920.281 M/sec                    (40.04%)
+        31,962,078      L1-dcache-load-misses:u   #    0.72% of all L1-dcache accesses  (40.00%)
+           289,928      LLC-loads:u               #   60.006 K/sec                    (39.97%)
+           239,807      LLC-load-misses:u         #   82.71% of all LL-cache accesses  (39.95%)
+
+       4.855618008 seconds time elapsed
+
+       4.702713000 seconds user
+       0.089137000 seconds sys
+
+

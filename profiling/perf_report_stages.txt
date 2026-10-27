@@ -1,0 +1,81 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 4K of event 'cycles:u'
+# Event count (approx.): 13047197437
+#
+# Overhead  Command          Shared Object        Symbol                          
+# ........  ...............  ...................  ................................
+#
+    74.99%  canny_scalar_te  canny_scalar_test    [.] gaussian_naive
+            |
+            ---gaussian_naive
+               main
+               __libc_start_main
+               0x5541f689495641d7
+
+    12.65%  canny_scalar_te  canny_scalar_test    [.] sobel_naive
+            |          
+             --12.24%--sobel_naive
+                       main
+                       __libc_start_main
+                       0x5541f689495641d7
+
+     3.18%  canny_scalar_te  libm-2.28.so         [.] atan2f32
+            |          
+             --2.88%--atan2f32
+                       main
+                       __libc_start_main
+                       0x5541f689495641d7
+
+     2.76%  canny_scalar_te  libm-2.28.so         [.] __atan2f_finite
+            |          
+             --2.49%--__atan2f_finite
+                       main
+                       __libc_start_main
+                       0x5541f689495641d7
+
+     1.70%  canny_scalar_te  canny_scalar_test    [.] nms_naive
+            |
+            ---nms_naive
+               main
+               __libc_start_main
+               0x5541f689495641d7
+
+     1.51%  canny_scalar_te  canny_scalar_test    [.] threshold_naive
+            |
+            ---threshold_naive
+               __libc_start_main
+               0x5541f689495641d7
+
+     1.04%  canny_scalar_te  libm-2.28.so         [.] atanf32
+            |
+            ---atanf32
+               main
+               __libc_start_main
+               0x5541f689495641d7
+
+     0.92%  canny_scalar_te  canny_scalar_test    [.] hysteresis_naive
+            |
+            ---hysteresis_naive
+               main
+               __libc_start_main
+               0x5541f689495641d7
+
+     0.46%  canny_scalar_te  [unknown]            [k] 0xffffffff85e00c17
+     0.44%  canny_scalar_te  canny_scalar_test    [.] atan2f@plt
+     0.29%  canny_scalar_te  libc-2.28.so         [.] __memset_evex_unaligned_erms
+     0.02%  canny_scalar_te  ld-2.28.so           [.] _dl_fixup
+     0.02%  canny_scalar_te  libstdc++.so.6.0.25  [.] 0x000000000008dae4
+     0.00%  canny_scalar_te  ld-2.28.so           [.] _dl_relocate_object
+     0.00%  canny_scalar_te  ld-2.28.so           [.] do_lookup_x
+     0.00%  canny_scalar_te  ld-2.28.so           [.] _dl_setup_hash
+     0.00%  canny_scalar_te  libc-2.28.so         [.] __munmap
+     0.00%  canny_scalar_te  [unknown]            [k] 0xffffffff85e0022a
+
+
+#
+# (Tip: To report cacheline events from previous recording: perf c2c report)
+#

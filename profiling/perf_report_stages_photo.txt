@@ -1,0 +1,75 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 5K of event 'cycles:u'
+# Event count (approx.): 17428400286
+#
+# Overhead  Command          Shared Object      Symbol                          
+# ........  ...............  .................  ................................
+#
+    56.03%  canny_scalar_te  canny_scalar_test  [.] gaussian_naive
+            |
+            ---gaussian_naive
+               main
+               __libc_start_main
+               0x5541f689495641d7
+
+    13.58%  canny_scalar_te  libm-2.28.so       [.] atanf32
+            |
+            ---atanf32
+               main
+               __libc_start_main
+               0x5541f689495641d7
+
+     9.42%  canny_scalar_te  canny_scalar_test  [.] sobel_naive
+            |          
+             --9.24%--sobel_naive
+                       main
+                       __libc_start_main
+                       0x5541f689495641d7
+
+     7.78%  canny_scalar_te  canny_scalar_test  [.] nms_naive
+            |
+            ---nms_naive
+               main
+               __libc_start_main
+               0x5541f689495641d7
+
+     4.35%  canny_scalar_te  canny_scalar_test  [.] hysteresis_naive
+            |
+            ---hysteresis_naive
+               main
+               __libc_start_main
+               0x5541f689495641d7
+
+     3.75%  canny_scalar_te  libm-2.28.so       [.] __atan2f_finite
+            |          
+             --3.43%--__atan2f_finite
+                       main
+                       __libc_start_main
+                       0x5541f689495641d7
+
+     2.30%  canny_scalar_te  libm-2.28.so       [.] atan2f32
+            |          
+             --1.81%--atan2f32
+                       main
+                       __libc_start_main
+                       0x5541f689495641d7
+
+     1.99%  canny_scalar_te  canny_scalar_test  [.] threshold_naive
+            |
+            ---threshold_naive
+               __libc_start_main
+               0x5541f689495641d7
+
+     0.42%  canny_scalar_te  [unknown]          [k] 0xffffffff85e00c17
+     0.23%  canny_scalar_te  libc-2.28.so       [.] __memset_evex_unaligned_erms
+     0.16%  canny_scalar_te  canny_scalar_test  [.] atan2f@plt
+     0.00%  canny_scalar_te  ld-2.28.so         [.] _dl_relocate_object
+
+
+#
+# (Tip: Generate a script for your data: perf script -g <lang>)
+#

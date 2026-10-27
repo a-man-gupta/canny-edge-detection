@@ -1,0 +1,17 @@
+image 1920x1080 (2073600 px)
+
+Whole-image blur (median)       ms/frame   cycles/px   GHz    speedup
+  naive (scalar)                 146.759     176.102   2.49      1.0x
+  SIMD exact (mul + add)           5.974       5.717   1.98     24.6x
+  SIMD FMA                         3.346       3.203   1.98     43.9x
+
+Kernel only, 8x8 block (median)  cycles/block  cycles/px  IPC   % of peak
+  FMA,   L1-resident (64 px)          162.2      2.535  2.08     61.6%
+  FMA,   L2-resident (full row)       167.1      2.611  2.01     59.8%
+  exact, L1-resident (64 px)          303.8      4.747  2.34     65.8%
+  exact, L2-resident (full row)       328.7      5.135  2.15     60.9%
+  peak: FMA 100 cycles/block (2 FMA/cycle), exact 200 cycles/block (2 mul|add/cycle)
+
+Correctness vs naive
+  SIMD exact: 0 of 2073600 pixels differ (bit-identical)
+  SIMD FMA:   0 of 2073600 pixels differ (0.0000%), max |diff| = 0 gray level

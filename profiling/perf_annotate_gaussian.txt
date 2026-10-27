@@ -1,0 +1,157 @@
+
+Sorted summary for file /afs/ece.cmu.edu/usr/pkumara/Public/canny-edge-detection/build/canny_scalar_test
+----------------------------------------------
+
+   52.60 canny_scalar_test.cpp:63
+   14.49 canny_scalar_test.cpp:64
+   11.90 canny_scalar_test.cpp:33
+   10.13 cmath:261
+    2.95 stl_algo.h:3722
+    1.48 canny_scalar_test.cpp:66
+    1.25 canny_scalar_test.cpp:62
+    1.20 canny_scalar_test.cpp:61
+ Percent |	Source code & Disassembly of canny_scalar_test for cycles:u (3230 samples, percent: local period)
+-----------------------------------------------------------------------------------------------------------------
+         :
+         :
+         :
+         :            Disassembly of section .text:
+         :
+         :            0000000000403e10 <gaussian_naive(unsigned char const*, float*, int, int, float const (*) [5])>:
+         :            _Z14gaussian_naivePKhPfiiPA5_Kf():
+    0.00 :   403e10: push   %rbp
+    0.00 :   403e11: mov    %rsp,%rbp
+    0.00 :   403e14: push   %r15
+    0.00 :   403e16: push   %r14
+    0.00 :   403e18: push   %r13
+    0.00 :   403e1a: push   %r12
+    0.00 :   403e1c: push   %rbx
+    0.00 :   403e1d: mov    %r8,-0x50(%rbp)
+    0.00 :   403e21: test   %ecx,%ecx
+    0.00 :   403e23: jle    403fd2 <gaussian_naive(unsigned char const*, float*, int, int, float const (*) [5])+0x1c2>
+    0.00 :   403e29: lea    -0x1(%rdx),%eax
+    0.00 :   403e2c: lea    -0x2(%rcx,%rcx,1),%r10d
+         :            reflect():
+    0.00 :   403e31: lea    (%rax,%rax,1),%r9d
+    0.00 :   403e35: test   %edx,%edx
+    0.00 :   403e37: jle    403fd2 <gaussian_naive(unsigned char const*, float*, int, int, float const (*) [5])+0x1c2>
+    0.00 :   403e3d: movslq %edx,%r14
+    0.00 :   403e40: mov    %rax,-0x58(%rbp)
+    0.00 :   403e44: lea    0x64(%r8),%rax
+    0.00 :   403e48: mov    %rdi,%r15
+    0.00 :   403e4b: lea    0x0(,%r14,4),%rbx
+    0.00 :   403e53: mov    %rsi,-0x48(%rbp)
+    0.00 :   403e57: pxor   %xmm3,%xmm3
+    0.00 :   403e5b: movss  0xb61(%rip),%xmm6        # 4049c4 <__dso_handle+0x23c>
+    0.00 :   403e63: mov    %rbx,-0x60(%rbp)
+    0.00 :   403e67: lea    -0x2(%rcx),%ebx
+    0.00 :   403e6a: movss  0xb56(%rip),%xmm5        # 4049c8 <__dso_handle+0x240>
+    0.00 :   403e72: movss  0xb86(%rip),%xmm4        # 404a00 <__dso_handle+0x278>
+    0.00 :   403e7a: mov    %ebx,-0x40(%rbp)
+    0.00 :   403e7d: movss  0xb46(%rip),%xmm8        # 4049cc <__dso_handle+0x244>
+    0.00 :   403e86: movl   $0xfffffffe,-0x3c(%rbp)
+    0.00 :   403e8d: movss  0xb2b(%rip),%xmm7        # 4049c0 <__dso_handle+0x238>
+    0.00 :   403e95: mov    %rax,-0x30(%rbp)
+         :            _Z14gaussian_naivePKhPfiiPA5_Kf():
+    0.00 :   403e99: movq   $0x0,-0x38(%rbp)
+    0.00 :   403ea1: mov    -0x38(%rbp),%rax
+    0.19 :   403ea5: mov    -0x50(%rbp),%rbx
+    0.00 :   403ea9: mov    -0x3c(%rbp),%r12d
+    0.10 :   403ead: pxor   %xmm1,%xmm1
+    0.25 :   403eb1: lea    -0x2(%rax),%r13d
+ canny_scalar_test.cpp:63    0.55 :   403eb5: xor    %r11d,%r11d
+    1.44 :   403eb8: movss  (%rbx,%r11,4),%xmm2
+    2.22 :   403ebe: mov    %r12d,%eax
+ canny_scalar_test.cpp:63    7.94 :   403ec1: jmp    403ed8 <gaussian_naive(unsigned char const*, float*, int, int, float const (*) [5])+0xc8>
+    0.00 :   403ec3: nopl   0x0(%rax,%rax,1)
+         :            reflect():
+    0.00 :   403ec8: mov    %eax,%esi
+    0.00 :   403eca: mov    %r10d,%edi
+    0.00 :   403ecd: neg    %esi
+    0.01 :   403ecf: sub    %eax,%edi
+    0.00 :   403ed1: test   %eax,%eax
+    0.00 :   403ed3: mov    %esi,%eax
+    0.00 :   403ed5: cmovns %edi,%eax
+    0.42 :   403ed8: test   %eax,%eax
+    0.03 :   403eda: js     403ec8 <gaussian_naive(unsigned char const*, float*, int, int, float const (*) [5])+0xb8>
+ canny_scalar_test.cpp:33    1.81 :   403edc: cmp    %eax,%ecx
+    0.00 :   403ede: jle    403ec8 <gaussian_naive(unsigned char const*, float*, int, int, float const (*) [5])+0xb8>
+         :            _Z14gaussian_naivePKhPfiiPA5_Kf():
+ canny_scalar_test.cpp:64    1.85 :   403ee0: movslq %eax,%rsi
+ canny_scalar_test.cpp:64    8.23 :   403ee3: lea    0x0(%r13,%r11,1),%eax
+ canny_scalar_test.cpp:64    0.55 :   403ee8: imul   %r14,%rsi
+    1.23 :   403eec: jmp    403f02 <gaussian_naive(unsigned char const*, float*, int, int, float const (*) [5])+0xf2>
+    0.00 :   403eee: xchg   %ax,%ax
+         :            reflect():
+    0.00 :   403ef0: mov    %eax,%edi
+    0.00 :   403ef2: mov    %r9d,%r8d
+    0.00 :   403ef5: neg    %edi
+    0.00 :   403ef7: sub    %eax,%r8d
+    0.00 :   403efa: test   %eax,%eax
+    0.00 :   403efc: mov    %edi,%eax
+    0.00 :   403efe: cmovns %r8d,%eax
+ canny_scalar_test.cpp:33    1.77 :   403f02: cmp    %eax,%edx
+    0.00 :   403f04: jle    403ef0 <gaussian_naive(unsigned char const*, float*, int, int, float const (*) [5])+0xe0>
+ canny_scalar_test.cpp:33    8.32 :   403f06: test   %eax,%eax
+    0.00 :   403f08: js     403ef0 <gaussian_naive(unsigned char const*, float*, int, int, float const (*) [5])+0xe0>
+         :            _Z14gaussian_naivePKhPfiiPA5_Kf():
+ canny_scalar_test.cpp:64    0.55 :   403f0a: cltq
+    1.44 :   403f0c: add    %r15,%rsi
+ canny_scalar_test.cpp:63    1.48 :   403f0f: pxor   %xmm0,%xmm0
+ canny_scalar_test.cpp:63    8.27 :   403f13: add    $0x1,%r11
+ canny_scalar_test.cpp:64    0.64 :   403f17: movzbl (%rsi,%rax,1),%eax
+ canny_scalar_test.cpp:63    2.88 :   403f1b: cvtsi2ss %eax,%xmm0
+ canny_scalar_test.cpp:63    8.59 :   403f1f: mulss  %xmm2,%xmm0
+   19.23 :   403f23: addss  %xmm0,%xmm1
+    0.22 :   403f27: cmp    $0x5,%r11
+ canny_scalar_test.cpp:62    1.25 :   403f2b: jne    403eb8 <gaussian_naive(unsigned char const*, float*, int, int, float const (*) [5])+0xa8>
+    0.32 :   403f2d: add    $0x1,%r12d
+    0.50 :   403f31: add    $0x14,%rbx
+ canny_scalar_test.cpp:61    0.52 :   403f35: cmp    %rbx,-0x30(%rbp)
+    0.68 :   403f39: jne    403eb5 <gaussian_naive(unsigned char const*, float*, int, int, float const (*) [5])+0xa5>
+ canny_scalar_test.cpp:66    1.48 :   403f3f: addss  %xmm6,%xmm1
+    0.00 :   403f43: movaps %xmm4,%xmm2
+    0.00 :   403f46: movaps %xmm1,%xmm0
+    0.03 :   403f49: andps  %xmm4,%xmm0
+ cmath:261    1.76 :   403f4c: ucomiss %xmm0,%xmm5
+    0.00 :   403f4f: jbe    403f79 <gaussian_naive(unsigned char const*, float*, int, int, float const (*) [5])+0x169>
+    0.00 :   403f51: cvttss2si %xmm1,%eax
+    2.78 :   403f55: pxor   %xmm0,%xmm0
+    0.00 :   403f59: andnps %xmm1,%xmm2
+    0.74 :   403f5c: cvtsi2ss %eax,%xmm0
+    0.00 :   403f60: movaps %xmm0,%xmm9
+    3.42 :   403f64: cmpnless %xmm1,%xmm9
+    0.00 :   403f6a: movaps %xmm2,%xmm1
+    0.19 :   403f6d: andps  %xmm8,%xmm9
+    1.42 :   403f71: subss  %xmm9,%xmm0
+    0.47 :   403f76: orps   %xmm0,%xmm1
+ stl_algo.h:3722    0.88 :   403f79: comiss %xmm1,%xmm3
+    0.50 :   403f7c: ja     403fb4 <gaussian_naive(unsigned char const*, float*, int, int, float const (*) [5])+0x1a4>
+    0.00 :   403f7e: movss  0xa3a(%rip),%xmm0        # 4049c0 <__dso_handle+0x238>
+    0.35 :   403f86: cmpnltss %xmm1,%xmm0
+    0.87 :   403f8b: andps  %xmm0,%xmm1
+    0.47 :   403f8e: andnps %xmm7,%xmm0
+    0.70 :   403f91: orps   %xmm0,%xmm1
+    0.00 :   403f94: mov    -0x48(%rbp),%rax
+    0.06 :   403f98: mov    -0x38(%rbp),%rbx
+    0.10 :   403f9c: movss  %xmm1,(%rax,%rbx,4)
+    0.25 :   403fa1: lea    0x1(%rbx),%rax
+    0.00 :   403fa5: cmp    %rbx,-0x58(%rbp)
+    0.00 :   403fa9: je     403fba <gaussian_naive(unsigned char const*, float*, int, int, float const (*) [5])+0x1aa>
+    0.00 :   403fab: mov    %rax,-0x38(%rbp)
+    0.06 :   403faf: jmpq   403ea5 <gaussian_naive(unsigned char const*, float*, int, int, float const (*) [5])+0x95>
+    0.00 :   403fb4: pxor   %xmm1,%xmm1
+    0.00 :   403fb8: jmp    403f94 <gaussian_naive(unsigned char const*, float*, int, int, float const (*) [5])+0x184>
+    0.00 :   403fba: mov    -0x60(%rbp),%rbx
+    0.00 :   403fbe: addl   $0x1,-0x3c(%rbp)
+    0.00 :   403fc2: add    %rbx,-0x48(%rbp)
+    0.00 :   403fc6: mov    -0x3c(%rbp),%eax
+    0.00 :   403fc9: cmp    %eax,-0x40(%rbp)
+    0.00 :   403fcc: jne    403e99 <gaussian_naive(unsigned char const*, float*, int, int, float const (*) [5])+0x89>
+    0.00 :   403fd2: pop    %rbx
+    0.00 :   403fd3: pop    %r12
+    0.00 :   403fd5: pop    %r13
+    0.00 :   403fd7: pop    %r14
+    0.00 :   403fd9: pop    %r15
+    0.00 :   403fdb: pop    %rbp
+    0.00 :   403fdc: retq

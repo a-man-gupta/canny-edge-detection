@@ -1,0 +1,10 @@
+    76.29%  [.] gaussian_naive                -      -            
+    15.72%  [.] main                          -      -            
+     3.02%  [.] atan2f32                      -      -            
+     2.68%  [.] __atan2f_finite               -      -            
+     1.03%  [.] atanf32                       -      -            
+     0.43%  [.] __memset_evex_unaligned_erms  -      -            
+     0.42%  [k] 0xffffffff85e00c17            -      -            
+     0.40%  [.] atan2f@plt                    -      -            
+     0.00%  [k] 0xffffffff85e0022a            -      -            
+     0.00%  [.] _dl_relocate_object           -      -            
