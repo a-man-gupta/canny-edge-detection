@@ -24,7 +24,7 @@ INLINE __m256i or3(__m256i a, __m256i b, __m256i c) {
   return _mm256_ternarylogic_epi32(a, b, c, 0xFE);
 }
 // a | (b & c) in one vpternlogd.
-INLINE __m256i or_and(__m256i a, __m256i b, __m256i c) {
+INLINE __m256i or_and(__m256i a, __m256i b, __m256i c) { // Port 3
   return _mm256_ternarylogic_epi32(a, b, c, 0xF8);
 }
 

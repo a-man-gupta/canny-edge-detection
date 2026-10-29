@@ -33,9 +33,9 @@ extern "C" __attribute__((noinline)) void threshold_i16_repeat(const int32_t *ma
                                                                uint8_t *labels, long n,
                                                                int low_sq, int high_sq,
                                                                long reps) {
-  const __m256i low = _mm256_set1_epi16(short(low_sq));
-  const __m256i high = _mm256_set1_epi16(short(high_sq));
-  const __m256i order = _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7);
+  const __m256i low = _mm256_set1_epi16(short(low_sq)); // Port 5
+  const __m256i high = _mm256_set1_epi16(short(high_sq)); // Port 5
+  const __m256i order = _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7); 
   for (long pass = 0; pass < reps; ++pass) {
     const int32_t *in = mag_sq;
     uint8_t *out = labels;
