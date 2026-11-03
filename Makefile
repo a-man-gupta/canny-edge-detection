@@ -8,6 +8,7 @@
 #   make nms-count  count the NMS loop's instructions and the peak of each unit
 #   make threshold / threshold-count / threshold-whole     Part 4 (double threshold), same three
 #   make hysteresis / hysteresis-count / hysteresis-whole  Part 5 (hysteresis), same three
+#   make l1         build and run the final int16 L1 Sobel and NMS kernels (src/kernel_*.cpp)
 #   make clean
 #
 # Run on a quiet core: check `top`, and that the core's hyperthread sibling is idle too
@@ -98,6 +99,32 @@ hysteresis-whole: hysteresis_driver.x
 
 hysteresis-count: hysteresis_driver.x
 	python3 scripts/analyze_hysteresis.py hysteresis_driver.x
+
+# Final int16 L1 kernels: Sobel 6x32 (|Gx| + |Gy|) and NMS 2x64 (max trick), AVX2 only.
+# Each driver checks exact results against a scalar reference, then prints the peak and
+# measured int16 ops/cycle. Sobel needs the scheduling flags: without them GCC spills.
+L1_FLAGS     = -std=c++17 -O3 -mavx2 -mno-avx512f -mtune=skylake -fno-tree-vectorize -fno-tree-slp-vectorize -fno-unroll-loops \
+               -mno-avx256-split-unaligned-load -mno-avx256-split-unaligned-store -Wall -Wextra -Wpedantic
+SOBEL_SIZE  ?= 256
+NMS_SIZE    ?= 768
+
+sobel_l1.x: src/driver_sobel.cpp src/kernel_sobel.cpp src/kernel_sobel.hpp src/benchmark.hpp Makefile
+	$(CXX) $(L1_FLAGS) -fno-tree-forwprop -fschedule-insns -fsched-pressure -c src/kernel_sobel.cpp -o kernel_sobel_l1.o
+	$(CXX) $(DRIVER_FLAGS) -Wall -Wextra -Wpedantic -o sobel_l1.x src/driver_sobel.cpp kernel_sobel_l1.o
+
+nms_l1.x: src/driver_nms.cpp src/kernel_nms.cpp src/kernel_nms.hpp src/benchmark.hpp Makefile
+	$(CXX) $(L1_FLAGS) -c src/kernel_nms.cpp -o kernel_nms_l1.o
+	$(CXX) $(DRIVER_FLAGS) -Wall -Wextra -Wpedantic -o nms_l1.x src/driver_nms.cpp kernel_nms_l1.o
+
+l1: sobel_l1.x nms_l1.x
+	SIZE=$(SOBEL_SIZE) taskset -c $(CORE) ./sobel_l1.x
+	SIZE=$(NMS_SIZE) taskset -c $(CORE) ./nms_l1.x
+
+sobel-l1: sobel_l1.x
+	SIZE=$(SOBEL_SIZE) taskset -c $(CORE) ./sobel_l1.x
+
+nms-l1: nms_l1.x
+	SIZE=$(NMS_SIZE) taskset -c $(CORE) ./nms_l1.x
 
 clean:
 	rm -f *.x *.o *.S sobel_kernel_marked.s nms_kernel_marked.s
