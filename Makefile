@@ -99,5 +99,21 @@ hysteresis-whole: hysteresis_driver.x
 hysteresis-count: hysteresis_driver.x
 	python3 scripts/analyze_hysteresis.py hysteresis_driver.x
 
+# Part 1: 5x5 Gaussian blur, AVX2 integer, five-row horizontal ring (gaussian_driver: test, rows, whole).
+GAUSSIAN_FLAGS = -std=c++17 -O3 -mavx2 -mno-avx512f -mtune=skylake -fno-tree-vectorize -fno-tree-slp-vectorize -fno-unroll-loops \
+                 -mno-avx256-split-unaligned-load -mno-avx256-split-unaligned-store -Wall -Wextra -Wpedantic
+gaussian_driver.x: src/gaussian_driver.cpp src/gaussian_kernel.cpp src/gaussian_kernel.hpp src/perf_counter.hpp Makefile
+	$(CXX) $(GAUSSIAN_FLAGS) $(EXTRA) -c src/gaussian_kernel.cpp -o gaussian_kernel.o
+	$(CXX) $(DRIVER_FLAGS) -Wall -Wextra -Wpedantic -o gaussian_driver.x src/gaussian_driver.cpp gaussian_kernel.o
+
+gaussian: gaussian_driver.x
+	taskset -c $(CORE) ./gaussian_driver.x
+
+gaussian-test: gaussian_driver.x
+	./gaussian_driver.x test
+
+gaussian-assemble: gaussian_driver.x
+	objdump -d --no-show-raw-insn -C gaussian_kernel.o > gaussian_kernel.S
+
 clean:
 	rm -f *.x *.o *.S sobel_kernel_marked.s nms_kernel_marked.s
