@@ -1,6 +1,6 @@
 # Canny edge detection: Sobel and NMS kernels
 
-18-645 (How to Write Fast Code), Team 11. This branch holds the two AVX2 kernels for stages 2 and 3
+18-645 (How to Write Fast Code), Team 11. The final stage 2/3 implementation provides the two AVX2 kernels for stages 2 and 3
 of Canny, written for the Xeon Silver 4208 (Cascade Lake) on the ECE machines:
 
 - **Sobel** (`src/kernel_sobel.cpp`): 3x3 gradients `Gx`, `Gy` and the L1 magnitude `M = |Gx| + |Gy|`,
@@ -9,7 +9,11 @@ of Canny, written for the Xeon Silver 4208 (Cascade Lake) on the ECE machines:
   `c > max(first, second - 1)` along its gradient direction, chosen with masks, not branches.
   One loop iteration produces 2 rows x 64 columns.
 
-The threshold and hysteresis stages are on the `stage_4_5` branch.
+Gaussian blur, threshold and hysteresis from `stage_4_5` are also preserved on main.
+Their existing `make gaussian-test`, `make threshold`, and `make hysteresis` targets remain available.
+The earlier `sobel_kernel.*` and `nms_kernel.*` whole-image APIs remain for that pipeline;
+the final strip kernels are the distinct `kernel_sobel.*` and `kernel_nms.*` files listed below.
+The two whole-image CMake benchmark targets are named `legacy_sobel_driver` and `legacy_nms_driver`.
 
 ## Files
 

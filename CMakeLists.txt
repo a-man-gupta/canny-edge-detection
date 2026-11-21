@@ -43,3 +43,105 @@ if(BUILD_TESTING)
   set_tests_properties(sobel_matches_scalar nms_matches_scalar
     PROPERTIES ENVIRONMENT "CHECK_ONLY=1")
 endif()
+
+# Existing whole-image pipeline and stages 4/5 retain their original interfaces.
+# Scalar CPU Canny. The no-vectorize flags below stay as part of this reference build.
+# canny_part2 is the same pipeline with the Part 2 Sobel kernel swapped in.
+add_executable(canny_scalar src/canny_scalar.cpp)
+add_executable(canny_part2 src/canny_part2.cpp src/sobel_kernel.cpp)
+# Part 2 benchmark in the assignment-driver style: scalar baseline vs kernel, cycles per pixel vs peak.
+add_executable(legacy_sobel_driver src/sobel_driver.cpp src/sobel_kernel.cpp)
+# Part 3 benchmark, same style.
+add_executable(legacy_nms_driver src/nms_driver.cpp src/nms_kernel.cpp)
+# Vector flags on the kernel translation units only; canny_scalar.cpp keeps -fno-tree-vectorize.
+# Sobel uses the tested AVX2-only flags; no AVX-512 mask registers or instructions.
+set_source_files_properties(src/sobel_kernel.cpp PROPERTIES COMPILE_FLAGS
+  "-mavx2 -mno-avx512f -mtune=skylake -fno-unroll-loops -mno-avx256-split-unaligned-load -mno-avx256-split-unaligned-store")
+# Avoid GCC expanding the shared gradient expressions into extra arithmetic.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  set_property(SOURCE src/sobel_kernel.cpp APPEND_STRING PROPERTY COMPILE_FLAGS " -fno-tree-forwprop")
+endif()
+# Exact integer NMS: AVX2 only, with the tested 16-group C++ schedule.
+# NMS: 256-bit AVX2 vectors plus AVX-512VL mask registers (kmovb, 1-uop masked selects); no zmm.
+set_source_files_properties(src/nms_kernel.cpp PROPERTIES COMPILE_FLAGS
+  "-O3 -mavx2 -mavx512f -mavx512vl -mavx512dq -mavx512bw -mtune=skylake -fno-unroll-loops -mno-avx256-split-unaligned-load -mno-avx256-split-unaligned-store")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  set_property(SOURCE src/nms_kernel.cpp APPEND_STRING PROPERTY COMPILE_FLAGS " -fno-tree-vectorize -fno-tree-slp-vectorize")
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+  set_property(SOURCE src/nms_kernel.cpp APPEND_STRING PROPERTY COMPILE_FLAGS " -fno-vectorize -fno-slp-vectorize")
+endif()
+# Part 4 double threshold (AVX2 only) and Part 5 hysteresis (AVX2 + AVX-512VL vpternlogd on ymm).
+add_executable(threshold_driver src/threshold_driver.cpp src/threshold_kernel.cpp)
+add_executable(hysteresis_driver src/hysteresis_driver.cpp src/hysteresis_kernel.cpp
+  src/threshold_kernel.cpp src/nms_kernel.cpp src/sobel_kernel.cpp)
+set_source_files_properties(src/threshold_kernel.cpp PROPERTIES COMPILE_FLAGS
+  "-O3 -mavx2 -mno-avx512f -mtune=skylake -fno-unroll-loops -mno-avx256-split-unaligned-load -mno-avx256-split-unaligned-store")
+set_source_files_properties(src/hysteresis_kernel.cpp PROPERTIES COMPILE_FLAGS
+  "-O3 -mavx2 -mavx512f -mavx512vl -mtune=skylake -fno-unroll-loops -mno-avx256-split-unaligned-load -mno-avx256-split-unaligned-store")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  set_property(SOURCE src/threshold_kernel.cpp src/hysteresis_kernel.cpp APPEND_STRING PROPERTY COMPILE_FLAGS " -fno-tree-vectorize -fno-tree-slp-vectorize")
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+  set_property(SOURCE src/threshold_kernel.cpp src/hysteresis_kernel.cpp APPEND_STRING PROPERTY COMPILE_FLAGS " -fno-vectorize -fno-slp-vectorize")
+endif()
+foreach(t threshold_driver hysteresis_driver)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(${t} PRIVATE -Wall -Wextra -Wpedantic)
+  endif()
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(${t} PRIVATE -fno-vectorize -fno-slp-vectorize)
+  elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(${t} PRIVATE -fno-tree-vectorize -fno-tree-slp-vectorize)
+  endif()
+endforeach()
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(canny_scalar PRIVATE -Wall -Wextra -Wpedantic)
+  target_compile_options(canny_part2 PRIVATE -Wall -Wextra -Wpedantic)
+  target_compile_options(legacy_sobel_driver PRIVATE -Wall -Wextra -Wpedantic)
+  target_compile_options(legacy_nms_driver PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  target_compile_options(canny_scalar PRIVATE -fno-vectorize -fno-slp-vectorize)
+  target_compile_options(canny_part2 PRIVATE -fno-vectorize -fno-slp-vectorize)
+  target_compile_options(legacy_sobel_driver PRIVATE -fno-vectorize -fno-slp-vectorize)
+  target_compile_options(legacy_nms_driver PRIVATE -fno-vectorize -fno-slp-vectorize)
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  target_compile_options(canny_scalar PRIVATE -fno-tree-vectorize -fno-tree-slp-vectorize)
+  target_compile_options(canny_part2 PRIVATE -fno-tree-vectorize -fno-tree-slp-vectorize)
+  target_compile_options(legacy_sobel_driver PRIVATE -fno-tree-vectorize -fno-tree-slp-vectorize)
+  target_compile_options(legacy_nms_driver PRIVATE -fno-tree-vectorize -fno-tree-slp-vectorize)
+endif()
+# Hysteresis connectivity test, and a bitwise Sobel check against the scalar OpenCV formulas.
+include(CTest)
+if(BUILD_TESTING)
+  add_executable(test_hysteresis src/test_hysteresis.cpp)
+  add_test(NAME hysteresis_connectivity COMMAND test_hysteresis)
+  add_executable(test_sobel_kernel src/test_sobel_kernel.cpp src/sobel_kernel.cpp)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(test_sobel_kernel PRIVATE -Wall -Wextra -Wpedantic)
+  endif()
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(test_sobel_kernel PRIVATE -fno-vectorize -fno-slp-vectorize)
+  elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(test_sobel_kernel PRIVATE -fno-tree-vectorize -fno-tree-slp-vectorize)
+  endif()
+  add_test(NAME sobel_kernel_matches_scalar COMMAND test_sobel_kernel)
+  # Part 3 kernel against the scalar NMS loop, bit for bit.
+  add_executable(test_nms_kernel src/test_nms_kernel.cpp src/nms_kernel.cpp)
+  add_test(NAME nms_kernel_matches_scalar COMMAND test_nms_kernel)
+  # Parts 4 and 5 against the scalar double threshold and hysteresis(), bit for bit.
+  add_executable(test_threshold_kernel src/test_threshold_kernel.cpp src/threshold_kernel.cpp)
+  add_test(NAME threshold_kernel_matches_scalar COMMAND test_threshold_kernel)
+  add_executable(test_hysteresis_kernel src/test_hysteresis_kernel.cpp src/hysteresis_kernel.cpp)
+  add_test(NAME hysteresis_kernel_matches_scalar COMMAND test_hysteresis_kernel)
+endif()
+
+add_executable(gaussian_driver src/gaussian_driver.cpp src/gaussian_kernel.cpp)
+target_compile_options(gaussian_driver PRIVATE -O3 -Wall -Wextra -Wpedantic)
+set_source_files_properties(src/gaussian_kernel.cpp PROPERTIES COMPILE_FLAGS
+  "-O3 -mavx2 -mno-avx512f -mtune=skylake -fno-unroll-loops -mno-avx256-split-unaligned-load -mno-avx256-split-unaligned-store")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  target_compile_options(gaussian_driver PRIVATE -fno-tree-vectorize -fno-tree-slp-vectorize)
+endif()
+if(BUILD_TESTING)
+  add_test(NAME gaussian_matches_scalar COMMAND gaussian_driver test)
+endif()
