@@ -1,23 +1,94 @@
-# Canny edge detection
+# Canny edge detection: Sobel and NMS kernels
 
-18-645 (How to Write Fast Code) project. This tree is the CPU Canny edge detector: a scalar C++ pipeline and OpenCV CPU baselines used to measure it.
+18-645 (How to Write Fast Code), Team 11. This branch holds the two AVX2 kernels for stages 2 and 3
+of Canny, written for the Xeon Silver 4208 (Cascade Lake) on the ECE machines:
 
-The scalar program in `src/canny_scalar.cpp` reads a grayscale PGM and runs the five Canny stages:
+- **Sobel** (`src/kernel_sobel.cpp`): 3x3 gradients `Gx`, `Gy` and the L1 magnitude `M = |Gx| + |Gy|`,
+  all int16 and exact. One loop iteration produces 6 rows x 32 columns.
+- **NMS** (`src/kernel_nms.cpp`): non-maximum suppression on Sobel's int16 planes. It keeps a pixel if
+  `c > max(first, second - 1)` along its gradient direction, chosen with masks, not branches.
+  One loop iteration produces 2 rows x 64 columns.
 
-1. Gaussian blur, to smooth noise.
-2. Sobel gradients, for magnitude and direction.
-3. Non-maximum suppression, to thin the gradient to a local ridge.
-4. Double threshold, into strong, weak, and rejected pixels.
-5. Hysteresis, in `src/hysteresis.hpp`, to keep weak pixels that connect to a strong edge.
+The threshold and hysteresis stages are on the `stage_4_5` branch.
 
-It then writes a binary edge map and prints per-stage times. Defaults are a 5x5 Gaussian with sigma 1.4 and thresholds 50 and 100. File reads and writes sit outside the timed loop.
+## Files
 
-OpenCV comparisons live in `benchmarks/run.py`: `opencv-1` (one thread) and `opencv-multi`. Both call `cv2.ocl.setUseOpenCL(False)` so the library stays on the CPU. How to generate images and read the plots is in [benchmarks/README.md](benchmarks/README.md).
+| File | What it is |
+| --- | --- |
+| `src/kernel_sobel.cpp`, `.hpp` | Sobel kernel and its buffer layout (fixed strides 448 / 416) |
+| `src/kernel_nms.cpp`, `.hpp` | NMS kernel |
+| `src/driver_sobel.cpp` | Checks Sobel against a scalar reference, then times it |
+| `src/driver_nms.cpp` | Checks NMS against a scalar reference, then times it |
+| `src/benchmark.hpp` | Shared timing code: reads real core cycles with `perf_event_open` |
+| `Makefile` | Builds and runs everything (below) |
+
+## Using the Makefile
+
+Run on an ECE machine. Pick a quiet core, and check that its hyperthread sibling is idle too
+(`cat /sys/devices/system/cpu/cpu10/topology/thread_siblings_list`, then look at `top`).
 
 ```bash
-./scripts/setup_remote.sh
-./scripts/run_remote.sh --smoke -- --iterations 3 --warmup 2
-./scripts/run_remote.sh --photo /path/to/natural-image.jpg
+make              # build both drivers, then run Sobel and NMS (same as make run)
+make sobel        # Sobel only
+make nms          # NMS only
+make check        # correctness checks only, no timing
+make assemble     # disassembly in build/kernel_sobel.S and build/kernel_nms.S
+make clean        # delete build/
 ```
 
-`setup_remote.sh` selects Python 3.10–3.14, because the default `python3` on this machine is too old for the pinned NumPy. `cpu_spec.txt` is a saved `lscpu` of the measurement machine. `./collect_hw_info.sh` writes a fresh CPU report. No script installs system packages.
+Each target builds what it needs first, so there is no separate build step. Outputs go to `build/`.
+
+Settings can be changed on the command line:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `CORE` | 10 | core the run is pinned to (`taskset -c`) |
+| `SOBEL_SIZE` | 256 | Sobel width: a multiple of 32, at most 384 |
+| `NMS_SIZE` | 768 | NMS width: a multiple of 64 |
+| `RUNS` | 100000 | kernel calls per timed trial |
+| `TRIALS` | 9 | timed trials; the median is reported |
+
+```bash
+make sobel SOBEL_SIZE=384 CORE=4
+make nms NMS_SIZE=1536 TRIALS=21
+```
+
+**How it builds.** The kernels and the drivers are compiled separately, with different flags:
+
+- Kernels: `-O3 -mavx2 -mno-avx512f` with auto-vectorization off, so the AVX2 intrinsics are exactly
+  what runs (256-bit only).
+- Sobel also gets `-fno-tree-forwprop -fschedule-insns -fsched-pressure`. Without them GCC reorders
+  the adds and spills registers, and Sobel drops from about 80% to about 70% of peak.
+- Drivers: `-O3` with auto-vectorization off, so the scalar reference stays scalar.
+
+## What the output means
+
+```
+Correctness: PASS (exact Gx, Gy, |Gx|+|Gy|; zero, 255, stripes, 96 random fills)
+Sobel L1, tile 6 rows x 32 columns, width 256
+  ports 0,1,5: (114 add/sub + 24 abs) / 3 = 46.00 cycles per loop
+  peak     = 138 instructions x 16 lanes / 46.00 = 48.00 ops/cycle
+  measured = 38.35 ops/cycle (median of 9), 79.9% of peak, 0.300 cycles/pixel
+```
+
+- **Correctness**: the kernel's output matches the scalar reference exactly on every test input.
+  The program stops with `FAIL` and the row and column if it does not.
+- **peak**: the theoretical peak. It counts the loop's instructions, puts them on the ALU ports
+  (0, 1, 5) that can run them, and takes the busiest port group. Sobel's peak is 48 int16 ops/cycle,
+  NMS's is 42.2 (each blend takes two port slots).
+- **measured**: int16 operations per real core cycle, the median over the trials, with data in L1.
+
+Typical results on ece024: Sobel about 80% of peak (38.5 ops/cycle), NMS about 84% (35.3 ops/cycle).
+
+## CMake correctness checks
+
+The CMake build uses the same final AVX2 kernels and scalar references as the Makefile.
+Run on an x86-64 Linux machine with AVX2:
+
+```bash
+cmake -S . -B build/cmake -DCMAKE_BUILD_TYPE=Release
+cmake --build build/cmake -j2
+ctest --test-dir build/cmake --output-on-failure
+```
+
+CTest runs correctness checks only; it does not require access to performance counters.
