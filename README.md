@@ -1,98 +1,42 @@
-# Canny edge detection: Sobel and NMS kernels
+# Canny edge detection on ECE024
 
-18-645 (How to Write Fast Code), Team 11. The final stage 2/3 implementation provides the two AVX2 kernels for stages 2 and 3
-of Canny, written for the Xeon Silver 4208 (Cascade Lake) on the ECE machines:
+The optimized Canny pipeline reads an 8-bit grayscale image and returns an edge map. OpenMP workers run Gaussian blur, Sobel, non-maximum suppression (NMS) and double thresholding on local tiles. Hysteresis connects edges across the resulting labels.
 
-- **Sobel** (`src/kernel_sobel.cpp`): 3x3 gradients `Gx`, `Gy` and the L1 magnitude `M = |Gx| + |Gy|`,
-  all int16 and exact. One loop iteration produces 6 rows x 32 columns.
-- **NMS** (`src/kernel_nms.cpp`): non-maximum suppression on Sobel's int16 planes. It keeps a pixel if
-  `c > max(first, second - 1)` along its gradient direction, chosen with masks, not branches.
-  One loop iteration produces 2 rows x 64 columns.
+## Build and run
 
-Gaussian blur, threshold and hysteresis from `stage_4_5` are also preserved on main.
-Their existing `make gaussian-test`, `make threshold`, and `make hysteresis` targets remain available.
-The earlier `sobel_kernel.*` and `nms_kernel.*` whole-image APIs remain for that pipeline;
-the final strip kernels are the distinct `kernel_sobel.*` and `kernel_nms.*` files listed below.
-The two whole-image CMake benchmark targets are named `legacy_sobel_driver` and `legacy_nms_driver`.
+On ECE024, from this directory, run the following commands with GCC, GNU Make, OpenMP and binutils installed.
 
-## Files
-
-| File | What it is |
-| --- | --- |
-| `src/kernel_sobel.cpp`, `.hpp` | Sobel kernel and its buffer layout (fixed strides 448 / 416) |
-| `src/kernel_nms.cpp`, `.hpp` | NMS kernel |
-| `src/driver_sobel.cpp` | Checks Sobel against a scalar reference, then times it |
-| `src/driver_nms.cpp` | Checks NMS against a scalar reference, then times it |
-| `src/benchmark.hpp` | Shared timing code: reads real core cycles with `perf_event_open` |
-| `Makefile` | Builds and runs everything (below) |
-
-## Using the Makefile
-
-Run on an ECE machine. Pick a quiet core, and check that its hyperthread sibling is idle too
-(`cat /sys/devices/system/cpu/cpu10/topology/thread_siblings_list`, then look at `top`).
-
-```bash
-make              # build both drivers, then run Sobel and NMS (same as make run)
-make sobel        # Sobel only
-make nms          # NMS only
-make check        # correctness checks only, no timing
-make assemble     # disassembly in build/kernel_sobel.S and build/kernel_nms.S
-make clean        # delete build/
+```sh
+make fusion FUSION_IMAGE=noise        # generated image, scalar check and timing
+make fusion                          # uses canny-fusion-inputs/photo-1920.raw
+make pipeline-asm                    # refresh assembly/ from the final executable
 ```
 
-Each target builds what it needs first, so there is no separate build step. Outputs go to `build/`.
+For your own image set FUSION_IMAGE, FUSION_WIDTH and FUSION_HEIGHT. Use headerless grayscale with one byte per pixel in row-major order. The driver reports filter, tracking and total milliseconds and prints **exact** when both labels and edges match the scalar reference.
 
-Settings can be changed on the command line:
+## Follow a pixel through the source
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `CORE` | 10 | core the run is pinned to (`taskset -c`) |
-| `SOBEL_SIZE` | 256 | Sobel width: a multiple of 32, at most 384 |
-| `NMS_SIZE` | 768 | NMS width: a multiple of 64 |
-| `RUNS` | 100000 | kernel calls per timed trial |
-| `TRIALS` | 9 | timed trials; the median is reported |
+[Browse the source folders](src/README.md).
 
-```bash
-make sobel SOBEL_SIZE=384 CORE=4
-make nms NMS_SIZE=1536 TRIALS=21
-```
+| Stage | Active source | Work per block | Design and measurements |
+|---|---|---|---|
+| Gaussian | [gaussian_kernel.cpp](src/kernels/gaussian/gaussian_kernel.cpp) | Five taps in each direction | [Gaussian README](src/kernels/gaussian/README.md) |
+| Sobel | [kernel_sobel.cpp](src/kernels/sobel/kernel_sobel.cpp) | 10 rows × 16 columns | [Sobel README](src/kernels/sobel/README.md) |
+| NMS | [kernel_nms.cpp](src/kernels/nms/kernel_nms.cpp) | 2 rows × 64 columns | [NMS README](src/kernels/nms/README.md) |
+| Double threshold | Same NMS loop | One label per pixel | [Threshold README](src/kernels/threshold/README.md) |
+| Hysteresis | [hysteresis_kernel.cpp](src/kernels/hysteresis/hysteresis_kernel.cpp) | 32 byte lanes in the seed scan, then a queue | [Hysteresis README](src/kernels/hysteresis/README.md) |
+| Tiling and OpenMP | [canny_tiled.cpp](src/pipeline/canny_tiled.cpp) | Up to 64 rows × 320 columns per tile | [OpenMP README](src/pipeline/README.md) |
 
-**How it builds.** The kernels and the drivers are compiled separately, with different flags:
+## Hardware and peak throughput
 
-- Kernels: `-O3 -mavx2 -mno-avx512f` with auto-vectorization off, so the AVX2 intrinsics are exactly
-  what runs (256-bit only).
-- Sobel also gets `-fno-tree-forwprop -fschedule-insns -fsched-pressure`. Without them GCC reorders
-  the adds and spills registers, and Sobel drops from about 80% to about 70% of peak.
-- Drivers: `-O3` with auto-vectorization off, so the scalar reference stays scalar.
+ECE024 has two Xeon Silver 4208 sockets with eight physical cores each. Each core has 32 KiB of L1 data cache and 1 MiB of L2. A 256-bit YMM vector holds sixteen int16 values or 32 bytes. The arithmetic model has **three vector execution ports** (0, 1, 5). Each accepts one eligible micro-op per cycle. Instruction eligibility matters: three ports do not imply three multiplies or three shuffles per cycle. Two load ports and one store-data port provide separate bandwidth. Hysteresis also uses AVX-512VL logic on YMM registers.
 
-## What the output means
+For each standalone loop, count its work, assign instructions to eligible ports, and take the largest resource demand in cycles. Divide work by that cycle bound for modeled throughput. Divide the same work by measured core cycles for achieved throughput. The individual READMEs identify the benchmark variant and units.
 
-```
-Correctness: PASS (exact Gx, Gy, |Gx|+|Gy|; zero, 255, stripes, 96 random fills)
-Sobel L1, tile 6 rows x 32 columns, width 256
-  ports 0,1,5: (114 add/sub + 24 abs) / 3 = 46.00 cycles per loop
-  peak     = 138 instructions x 16 lanes / 46.00 = 48.00 ops/cycle
-  measured = 38.35 ops/cycle (median of 9), 79.9% of peak, 0.300 cycles/pixel
-```
+## End-to-end latency
 
-- **Correctness**: the kernel's output matches the scalar reference exactly on every test input.
-  The program stops with `FAIL` and the row and column if it does not.
-- **peak**: the theoretical peak. It counts the loop's instructions, puts them on the ALU ports
-  (0, 1, 5) that can run them, and takes the busiest port group. Sobel's peak is 48 int16 ops/cycle,
-  NMS's is 42.2 (each blend takes two port slots).
-- **measured**: int16 operations per real core cycle, the median over the trials, with data in L1.
+![Latency of scalar, single-core optimized and 16-core optimized Canny at 1080p and 4K](benchmarks/fusion/audit/Canny-latency-by-size-bars.png)
 
-Typical results on ece024: Sobel about 80% of peak (38.5 ops/cycle), NMS about 84% (35.3 ops/cycle).
+The native 4K photo took **265.74 ms scalar**, **24.63 ms on one optimized core** and **2.735 ms on 16 cores**. These measurements exclude file I/O. The 1080p portrait and 4K Apollo photograph have different edge content.
 
-## CMake correctness checks
-
-The CMake build uses the same final AVX2 kernels and scalar references as the Makefile.
-Run on an x86-64 Linux machine with AVX2:
-
-```bash
-cmake -S . -B build/cmake -DCMAKE_BUILD_TYPE=Release
-cmake --build build/cmake -j2
-ctest --test-dir build/cmake --output-on-failure
-```
-
-CTest runs correctness checks only; it does not require access to performance counters.
+[Illustrated report and scaling plots](benchmarks/fusion/audit/Canny-performance.pdf) · [Raw trials](benchmarks/fusion/audit/final.log) · [Linked assembly](assembly/) · [Standalone driver guide](docs/standalone-sobel-nms.md). The standalone and earlier whole-image drivers have separate entry points and build targets.

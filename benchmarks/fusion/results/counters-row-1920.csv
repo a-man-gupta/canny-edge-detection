@@ -1,0 +1,6 @@
+# started on Sat Nov 21 22:29:28 2026
+
+343088434,,cycles:u,140914112,100.00,,
+725116834,,instructions:u,140914112,100.00,2.11,insn per cycle
+226581190,,L1-dcache-loads,140914112,100.00,,
+19874881,,L1-dcache-load-misses,140914112,100.00,8.77,of all L1-dcache accesses

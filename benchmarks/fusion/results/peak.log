@@ -1,0 +1,41 @@
+wrote build/kernel_sobel.S and build/kernel_nms.S
+Correctness: PASS (exact Gx, Gy, |Gx|+|Gy|; zero, 255, stripes, 96 random fills)
+Sobel L1, tile 6 rows x 32 columns, width 64
+  ports 0,1,5: (114 add/sub + 24 abs) / 3 = 46.00 cycles per loop
+  peak     = 138 instructions x 16 lanes / 46.00 = 48.00 ops/cycle
+  measured = 20.78 ops/cycle (median of 9), 43.3% of peak, 0.553 cycles/pixel
+Correctness: PASS (exact Gx, Gy, |Gx|+|Gy|; zero, 255, stripes, 96 random fills)
+Sobel L1, tile 6 rows x 32 columns, width 128
+  ports 0,1,5: (114 add/sub + 24 abs) / 3 = 46.00 cycles per loop
+  peak     = 138 instructions x 16 lanes / 46.00 = 48.00 ops/cycle
+  measured = 21.18 ops/cycle (median of 9), 44.1% of peak, 0.543 cycles/pixel
+Correctness: PASS (exact Gx, Gy, |Gx|+|Gy|; zero, 255, stripes, 96 random fills)
+Sobel L1, tile 6 rows x 32 columns, width 256
+  ports 0,1,5: (114 add/sub + 24 abs) / 3 = 46.00 cycles per loop
+  peak     = 138 instructions x 16 lanes / 46.00 = 48.00 ops/cycle
+  measured = 21.31 ops/cycle (median of 9), 44.4% of peak, 0.540 cycles/pixel
+Correctness: PASS (exact Gx, Gy, |Gx|+|Gy|; zero, 255, stripes, 96 random fills)
+Sobel L1, tile 6 rows x 32 columns, width 384
+  ports 0,1,5: (114 add/sub + 24 abs) / 3 = 46.00 cycles per loop
+  peak     = 138 instructions x 16 lanes / 46.00 = 48.00 ops/cycle
+  measured = 37.28 ops/cycle (median of 9), 77.7% of peak, 0.308 cycles/pixel
+Correctness: PASS (400 fills: ties, small and full ranges, both diagonal signs)
+NMS L1, tile 2 rows x 64 columns, width 64
+  ports 0,1,5: (88 ports-0/1-only + 112 any) / 3 = 66.67 cycles per loop
+  peak     = 176 instructions x 16 lanes / 66.67 = 42.24 ops/cycle
+  measured = 31.05 ops/cycle (median of 9), 73.5% of peak, 0.708 cycles/pixel
+Correctness: PASS (400 fills: ties, small and full ranges, both diagonal signs)
+NMS L1, tile 2 rows x 64 columns, width 128
+  ports 0,1,5: (88 ports-0/1-only + 112 any) / 3 = 66.67 cycles per loop
+  peak     = 176 instructions x 16 lanes / 66.67 = 42.24 ops/cycle
+  measured = 33.06 ops/cycle (median of 9), 78.3% of peak, 0.665 cycles/pixel
+Correctness: PASS (400 fills: ties, small and full ranges, both diagonal signs)
+NMS L1, tile 2 rows x 64 columns, width 256
+  ports 0,1,5: (88 ports-0/1-only + 112 any) / 3 = 66.67 cycles per loop
+  peak     = 176 instructions x 16 lanes / 66.67 = 42.24 ops/cycle
+  measured = 34.31 ops/cycle (median of 9), 81.2% of peak, 0.641 cycles/pixel
+Correctness: PASS (400 fills: ties, small and full ranges, both diagonal signs)
+NMS L1, tile 2 rows x 64 columns, width 384
+  ports 0,1,5: (88 ports-0/1-only + 112 any) / 3 = 66.67 cycles per loop
+  peak     = 176 instructions x 16 lanes / 66.67 = 42.24 ops/cycle
+  measured = 34.74 ops/cycle (median of 9), 82.2% of peak, 0.633 cycles/pixel

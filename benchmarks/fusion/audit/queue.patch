@@ -1,0 +1,61 @@
+--- a/src/hysteresis_kernel.cpp
++++ b/src/hysteresis_kernel.cpp
+@@ -93,7 +93,7 @@
+   }
+ }
+ 
+-template<bool exact_masks>
++template<bool exact_masks, bool zero_side_borders=false>
+ static void track(int w, int h, const uint8_t *labels, uint8_t *edges,
+                        std::vector<size_t> &queue) {
+   queue.clear();
+@@ -161,6 +161,21 @@
+   // Queue pass: grow from the seeds through weak pixels.
+   for (size_t head = 0; head < queue.size(); ++head) {
+     const size_t i = queue[head];
++    if constexpr (zero_side_borders) {
++      // NMS clears both outer columns. Queued pixels therefore have valid left/right neighbors.
++      auto visit = [&](size_t neighbor) {
++        if (labels[neighbor]==1 && edges[neighbor]==0) {
++          edges[neighbor]=255;
++          queue.push_back(neighbor);
++        }
++      };
++      auto visit_row = [&](size_t center) { visit(center-1); visit(center); visit(center+1); };
++      if (i>=size_t(w)) visit_row(i-w);
++      visit(i-1);
++      visit(i+1);
++      if (i<size_t(h-1)*w) visit_row(i+w);
++      continue;
++    }
+     const int y = int(i / w), x = int(i % w);
+     for (int j = -1; j <= 1; ++j)
+       for (int k = -1; k <= 1; ++k) {
+@@ -182,3 +197,7 @@
+ void hysteresis_mask_kernel(int w,int h,const uint8_t *labels,uint8_t *edges,std::vector<size_t> &queue) {
+   track<true>(w,h,labels,edges,queue);
+ }
++
++void hysteresis_slab(int w,int h,const uint8_t *labels,uint8_t *edges,std::vector<size_t> &queue) {
++  track<true,true>(w,h,labels,edges,queue);
++}
+--- a/src/hysteresis_kernel.hpp
++++ b/src/hysteresis_kernel.hpp
+@@ -27,3 +27,6 @@
+                                         long begin, long n, uint32_t *hits, long reps);
+ 
+ void hysteresis_mask_kernel(int w,int h,const uint8_t *labels,uint8_t *edges,std::vector<size_t> &queue);
++
++// Requires zero labels in the first and last column of every row.
++void hysteresis_slab(int w,int h,const uint8_t *labels,uint8_t *edges,std::vector<size_t> &queue);
+--- a/src/canny_tiled.cpp
++++ b/src/canny_tiled.cpp
+@@ -173,7 +173,7 @@
+         int id=omp_get_thread_num(), n=omp_get_num_threads();
+         int first=int(int64_t(id)*h/n), end=int(int64_t(id+1)*h/n);
+         std::vector<size_t> queue;
+-        auto track = mask_seeds ? hysteresis_mask_kernel : hysteresis_kernel;
++        auto track = mask_seeds ? hysteresis_slab : hysteresis_kernel;
+         track(w,end-first,labels+size_t(first)*w,edges+size_t(first)*w,queue);
+ #pragma omp barrier
+         // Collect seam candidates while all slab edge maps are read-only.

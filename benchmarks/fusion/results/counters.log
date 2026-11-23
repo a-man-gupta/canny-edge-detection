@@ -1,0 +1,12 @@
+trial 4.355619 3.109923 1.245696
+1920x1080 canny-fusion-inputs/photo-1920.raw threads=1 strip=320 scalar_ms=62.625 filter_ms=3.110 track_ms=1.246 total_ms=4.356 MPix/s=476.1 exact
+trial 20.060979 17.460210 2.600769
+3840x2160 canny-fusion-inputs/photo-3840.raw threads=1 strip=320 scalar_ms=242.926 filter_ms=17.460 track_ms=2.601 total_ms=20.061 MPix/s=413.5 exact
+trial 4.774865 3.569135 1.205729
+1920x1080 canny-fusion-inputs/photo-1920.raw threads=1 strip=320 scalar_ms=69.973 filter_ms=3.569 track_ms=1.206 total_ms=4.775 MPix/s=434.3 exact
+trial 18.202418 15.898267 2.304152
+3840x2160 canny-fusion-inputs/photo-3840.raw threads=1 strip=320 scalar_ms=249.384 filter_ms=15.898 track_ms=2.304 total_ms=18.202 MPix/s=455.7 exact
+trial 4.714038 3.508385 1.205653
+1920x1080 canny-fusion-inputs/photo-1920.raw threads=1 strip=320 scalar_ms=60.202 filter_ms=3.508 track_ms=1.206 total_ms=4.714 MPix/s=439.9 exact
+trial 17.710116 15.397243 2.312873
+3840x2160 canny-fusion-inputs/photo-3840.raw threads=1 strip=320 scalar_ms=233.080 filter_ms=15.397 track_ms=2.313 total_ms=17.710 MPix/s=468.3 exact

@@ -11,3 +11,7 @@ hardware_report.txt
 /*.x
 /*.S
 /*.s
+
+# Reproducible inputs and full-resolution edge maps for the fusion experiment.
+/canny-fusion-inputs/
+/benchmarks/fusion/results/*.raw

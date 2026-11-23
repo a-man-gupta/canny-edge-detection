@@ -1,0 +1,6 @@
+trial 0.019673 0.014393 0.005281
+5x5 noise threads=8 strip=320 scalar_ms=0.002 filter_ms=0.014 track_ms=0.005 total_ms=0.020 MPix/s=1.3 exact
+trial 0.063196 0.040660 0.022536
+137x131 noise threads=8 strip=320 scalar_ms=1.066 filter_ms=0.041 track_ms=0.023 total_ms=0.063 MPix/s=284.0 exact
+trial 0.115557 0.053070 0.062486
+385x257 noise threads=8 strip=320 scalar_ms=6.086 filter_ms=0.053 track_ms=0.062 total_ms=0.116 MPix/s=856.2 exact

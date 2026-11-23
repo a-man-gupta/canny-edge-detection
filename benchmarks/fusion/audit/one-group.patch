@@ -1,0 +1,60 @@
+--- a/src/kernel_sobel.cpp
++++ b/src/kernel_sobel.cpp
+@@ -28,37 +28,26 @@
+ void sobel_kernel(const uint16_t *input, int16_t *output, int width) {
+ #endif
+     using namespace sobel_l1;
+-    for (const uint16_t *end = input + width; input != end; input += 32, output += 32) {
+-        __m256i d_mid[2], e_prev[2], s_top[2], s_mid[2];
+-
+-        // ==================== SETUP: INPUT ROWS 0 AND 1 ====================
+-#pragma GCC unroll 2
+-        for (int g = 0; g < 2; g++) {
+-            __m256i d_top;
+-            ROW(input + 16 * g, d_top, s_top[g]);
+-            ROW(input + SOBEL_IN_STRIDE + 16 * g, d_mid[g], s_mid[g]);
+-            e_prev[g] = ADD(d_top, d_mid[g]);   // E = D_top + D_mid
+-        }
+-
+-        // ==================== ONE OUTPUT ROW PER NEW INPUT ROW ====================
+-#pragma GCC unroll 8
+-        for (int r = 0; r < rows_to_compute; r++) {
+-#pragma GCC unroll 2
+-            for (int g = 0; g < 2; g++) {
+-                __m256i d, s;
+-                ROW(input + (r + 2) * SOBEL_IN_STRIDE + 16 * g, d, s);
+-                __m256i e = ADD(d_mid[g], d);    // E = D_mid + D_bottom
+-                __m256i gx = ADD(e_prev[g], e);  // Gx = D_top + 2 D_mid + D_bottom
+-                __m256i gy = SUB(s, s_top[g]);   // Gy = S_bottom - S_top
+-                int16_t *o = output + r * SOBEL_OUT_STRIDE + 16 * g;
+-                STORE(o, ADD(ABS(gx), ABS(gy)));  // M = |Gx| + |Gy|
+-                STORE(o + SOBEL_PLANE, gx);
+-                STORE(o + 2 * SOBEL_PLANE, gy);
+-                d_mid[g] = d;
+-                e_prev[g] = e;
+-                s_top[g] = s_mid[g];
+-                s_mid[g] = s;
+-            }
++    for (int x=0; x<width; x+=16) {
++        const uint16_t *column=input+x;
++        __m256i d_top, d_mid, s_top, s_mid;
++        ROW(column,d_top,s_top);
++        ROW(column+SOBEL_IN_STRIDE,d_mid,s_mid);
++        __m256i previous=ADD(d_top,d_mid);
++#pragma GCC unroll 10
++        for (int r=0;r<rows_to_compute;++r) {
++            __m256i d,s;
++            ROW(column+(r+2)*SOBEL_IN_STRIDE,d,s);
++            __m256i next=ADD(d_mid,d);
++            __m256i gx=ADD(previous,next), gy=SUB(s,s_top);
++            int16_t *o=output+r*SOBEL_OUT_STRIDE+x;
++            STORE(o,ADD(ABS(gx),ABS(gy)));
++            STORE(o+SOBEL_PLANE,gx);
++            STORE(o+2*SOBEL_PLANE,gy);
++            previous=next;
++            d_mid=d;
++            s_top=s_mid;
++            s_mid=s;
+         }
+     }
+ }

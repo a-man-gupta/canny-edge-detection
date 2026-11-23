@@ -16,7 +16,7 @@ on 5; 2 load ports, 1 store, 4 uops issued per cycle. Indexed memory operands of
 instructions are unlaminated (2 issue slots). The ALU bound is Hall's bound: for every set of
 ports, the uops that can only run there, divided by the number of ports (`scripts/port_model.py`).
 
-## Stage 4: double threshold (`src/threshold_kernel.cpp`, `make threshold`)
+## Stage 4: double threshold (`src/kernels/threshold/threshold_kernel.cpp`, `make threshold`)
 
 Input is NMS's output: int32 squared magnitude. Thresholds are squared too (floor(50²) = 2500,
 floor(100²) = 10000), as in `canny_part2.cpp`. Output is a uint8 label: 0, 1 (weak), 2 (strong).
@@ -52,7 +52,7 @@ Peak: **0.125 cycles/pixel = 8 pixels/cycle** (port 5, with issue nearly full).
 
 0.50 instructions/pixel. Cycles/pixel does not move with the clock, as expected with data in L1.
 
-## Stage 5: hysteresis (`src/hysteresis_kernel.cpp`, `make hysteresis`)
+## Stage 5: hysteresis (`src/kernels/hysteresis/hysteresis_kernel.cpp`, `make hysteresis`)
 
 Input: the labels. Output: uint8 edges, 255 for strong pixels and for weak pixels joined to a
 strong one through 8-connected weak pixels; the same as `hysteresis()` in `hysteresis.hpp`.

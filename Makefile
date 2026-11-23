@@ -58,24 +58,24 @@ assemble: build/kernel_sobel.o build/kernel_nms.o
 build:
 	mkdir -p build
 
-build/kernel_sobel.o: src/kernel_sobel.cpp src/kernel_sobel.hpp Makefile | build
+build/kernel_sobel.o: src/kernels/sobel/kernel_sobel.cpp src/kernels/sobel/kernel_sobel.hpp Makefile | build
 	$(CXX) $(SOBEL_FLAGS) -c $< -o $@
 
-build/kernel_nms.o: src/kernel_nms.cpp src/kernel_nms.hpp Makefile | build
+build/kernel_nms.o: src/kernels/nms/kernel_nms.cpp src/kernels/nms/kernel_nms.hpp Makefile | build
 	$(CXX) $(KERNEL_FLAGS) -c $< -o $@
 
-build/sobel.x: src/driver_sobel.cpp src/benchmark.hpp src/kernel_sobel.hpp build/kernel_sobel.o
+build/sobel.x: src/drivers/driver_sobel.cpp src/common/benchmark.hpp src/kernels/sobel/kernel_sobel.hpp build/kernel_sobel.o
 	$(CXX) $(DRIVER_FLAGS) $< build/kernel_sobel.o -o $@
 
-build/nms.x: src/driver_nms.cpp src/benchmark.hpp src/kernel_nms.hpp build/kernel_nms.o
+build/nms.x: src/drivers/driver_nms.cpp src/common/benchmark.hpp src/kernels/nms/kernel_nms.hpp build/kernel_nms.o
 	$(CXX) $(DRIVER_FLAGS) $< build/kernel_nms.o -o $@
 
 # Part 1: 5x5 Gaussian blur, AVX2 integer, five-row horizontal ring (gaussian_driver: test, rows, whole).
 GAUSSIAN_FLAGS = -std=c++17 -O3 -mavx2 -mno-avx512f -mtune=skylake -fno-tree-vectorize -fno-tree-slp-vectorize -fno-unroll-loops \
                  -mno-avx256-split-unaligned-load -mno-avx256-split-unaligned-store -Wall -Wextra -Wpedantic
-gaussian_driver.x: src/gaussian_driver.cpp src/gaussian_kernel.cpp src/gaussian_kernel.hpp src/perf_counter.hpp Makefile
-	$(CXX) $(GAUSSIAN_FLAGS) $(EXTRA) -c src/gaussian_kernel.cpp -o gaussian_kernel.o
-	$(CXX) $(DRIVER_FLAGS) -Wall -Wextra -Wpedantic -o gaussian_driver.x src/gaussian_driver.cpp gaussian_kernel.o
+gaussian_driver.x: src/drivers/gaussian_driver.cpp src/kernels/gaussian/gaussian_kernel.cpp src/kernels/gaussian/gaussian_kernel.hpp src/common/perf_counter.hpp Makefile
+	$(CXX) $(GAUSSIAN_FLAGS) $(EXTRA) -c src/kernels/gaussian/gaussian_kernel.cpp -o gaussian_kernel.o
+	$(CXX) $(DRIVER_FLAGS) -Wall -Wextra -Wpedantic -o gaussian_driver.x src/drivers/gaussian_driver.cpp gaussian_kernel.o
 
 gaussian: gaussian_driver.x
 	taskset -c $(CORE) ./gaussian_driver.x
@@ -100,9 +100,9 @@ NMS_LEGACY_FLAGS    = -std=c++17 -O3 -mavx2 -mavx512f -mavx512vl -mavx512dq -mav
                -mno-avx256-split-unaligned-load -mno-avx256-split-unaligned-store -Wall -Wextra -Wpedantic
 
 # Part 4: double threshold, AVX2 only, 64 pixels per hot-loop iteration.
-threshold_driver.x: src/threshold_driver.cpp src/threshold_kernel.cpp src/threshold_kernel.hpp src/perf_counter.hpp Makefile
-	$(CXX) $(THRESHOLD_FLAGS) $(EXTRA) -c src/threshold_kernel.cpp -o threshold_kernel.o
-	$(CXX) $(DRIVER_FLAGS) -Wall -Wextra -Wpedantic -o threshold_driver.x src/threshold_driver.cpp threshold_kernel.o
+threshold_driver.x: src/drivers/threshold_driver.cpp src/kernels/threshold/threshold_kernel.cpp src/kernels/threshold/threshold_kernel.hpp src/common/perf_counter.hpp Makefile
+	$(CXX) $(THRESHOLD_FLAGS) $(EXTRA) -c src/kernels/threshold/threshold_kernel.cpp -o threshold_kernel.o
+	$(CXX) $(DRIVER_FLAGS) -Wall -Wextra -Wpedantic -o threshold_driver.x src/drivers/threshold_driver.cpp threshold_kernel.o
 
 threshold: threshold_driver.x
 	taskset -c $(CORE) ./threshold_driver.x
@@ -115,13 +115,13 @@ threshold-count: threshold_driver.x
 
 # Part 5: hysteresis vector pass, AVX2 + AVX-512VL vpternlogd, 4 rows x 32 pixels per iteration.
 # hysteresis-whole builds labels with the Sobel, NMS and threshold kernels, so it links all four.
-hysteresis_driver.x: src/hysteresis_driver.cpp src/hysteresis_kernel.cpp src/hysteresis_kernel.hpp src/hysteresis.hpp \
-                     src/threshold_kernel.cpp src/nms_kernel.cpp src/sobel_kernel.cpp src/perf_counter.hpp Makefile
-	$(CXX) $(HYSTERESIS_FLAGS) $(EXTRA) -c src/hysteresis_kernel.cpp -o hysteresis_kernel.o
-	$(CXX) $(THRESHOLD_FLAGS) $(EXTRA) -c src/threshold_kernel.cpp -o threshold_kernel.o
-	$(CXX) $(NMS_LEGACY_FLAGS) -c src/nms_kernel.cpp -o nms_kernel.o
-	$(CXX) $(SOBEL_LEGACY_FLAGS) -c src/sobel_kernel.cpp -o sobel_kernel.o
-	$(CXX) $(DRIVER_FLAGS) -Wall -Wextra -Wpedantic -o hysteresis_driver.x src/hysteresis_driver.cpp \
+hysteresis_driver.x: src/drivers/hysteresis_driver.cpp src/kernels/hysteresis/hysteresis_kernel.cpp src/kernels/hysteresis/hysteresis_kernel.hpp src/reference/hysteresis.hpp \
+                     src/kernels/threshold/threshold_kernel.cpp src/legacy/nms_kernel.cpp src/legacy/sobel_kernel.cpp src/common/perf_counter.hpp Makefile
+	$(CXX) $(HYSTERESIS_FLAGS) $(EXTRA) -c src/kernels/hysteresis/hysteresis_kernel.cpp -o hysteresis_kernel.o
+	$(CXX) $(THRESHOLD_FLAGS) $(EXTRA) -c src/kernels/threshold/threshold_kernel.cpp -o threshold_kernel.o
+	$(CXX) $(NMS_LEGACY_FLAGS) -c src/legacy/nms_kernel.cpp -o nms_kernel.o
+	$(CXX) $(SOBEL_LEGACY_FLAGS) -c src/legacy/sobel_kernel.cpp -o sobel_kernel.o
+	$(CXX) $(DRIVER_FLAGS) -Wall -Wextra -Wpedantic -o hysteresis_driver.x src/drivers/hysteresis_driver.cpp \
 	  hysteresis_kernel.o threshold_kernel.o nms_kernel.o sobel_kernel.o
 
 hysteresis: hysteresis_driver.x
@@ -140,3 +140,55 @@ hysteresis-count: hysteresis_driver.x
 
 clean:
 	rm -rf build
+
+# Integrated L1-magnitude pipeline for ECE024 (hysteresis needs AVX-512VL).
+build/canny_hysteresis.o: src/kernels/hysteresis/hysteresis_kernel.cpp src/kernels/hysteresis/hysteresis_kernel.hpp | build
+	$(CXX) $(HYSTERESIS_FLAGS) -c $< -o $@
+
+build/canny_tiled.x: src/drivers/driver_tiled.cpp src/pipeline/canny_tiled.cpp src/pipeline/canny_tiled.hpp src/kernels/gaussian/gaussian_kernel.cpp src/kernels/gaussian/gaussian_kernel.hpp src/reference/hysteresis.hpp build/kernel_sobel.o build/kernel_nms.o build/canny_hysteresis.o
+	$(CXX) $(GAUSSIAN_FLAGS) -fopenmp $(filter %.cpp %.o,$^) -o $@
+
+.PHONY: check-tiled
+check-tiled: build/canny_tiled.x
+	@set -e; for dims in '5 5' '67 17' '137 131' '385 257'; do \
+	    for image in flat ramp noise; do ./build/canny_tiled.x $$dims 4 128 1 $$image; done; \
+	done
+
+# Same Sobel body with a taller slab to amortize the NMS halo.
+build/kernel_sobel10.o: src/kernels/sobel/kernel_sobel.cpp src/kernels/sobel/kernel_sobel.hpp Makefile | build
+	$(CXX) $(SOBEL_FLAGS) -DSOBEL_ROWS=10 -c $< -o $@
+
+build/canny_tall.x: src/drivers/driver_tiled.cpp src/pipeline/canny_tiled.cpp src/pipeline/canny_tiled.hpp src/kernels/gaussian/gaussian_kernel.cpp src/kernels/gaussian/gaussian_kernel.hpp src/reference/hysteresis.hpp build/kernel_sobel10.o build/kernel_nms.o build/canny_hysteresis.o
+	$(CXX) $(GAUSSIAN_FLAGS) -DSOBEL_ROWS=10 -fopenmp $(filter %.cpp %.o,$^) -o $@
+
+# Reproduce the selected full-pipeline configuration on ECE024.
+FUSION_WIDTH ?= 1920
+FUSION_HEIGHT ?= 1080
+FUSION_THREADS ?= 8
+FUSION_IMAGE ?= canny-fusion-inputs/photo-1920.raw
+FUSION_CORES ?= 0,2,4,6,8,10,12,14
+.PHONY: fusion
+fusion: build/canny_fast.x
+	OMP_PLACES=cores OMP_PROC_BIND=close CANNY_MASK_SEEDS=1 taskset -c $(FUSION_CORES) $< $(FUSION_WIDTH) $(FUSION_HEIGHT) $(FUSION_THREADS) 320 7 $(FUSION_IMAGE) row
+
+# A/B experiment: same eight NMS rows, retain the overlapping Sobel results.
+build/kernel_sobel_halo.o: src/kernels/sobel/kernel_sobel.cpp src/kernels/sobel/kernel_sobel.hpp Makefile | build
+	$(CXX) $(SOBEL_FLAGS) -DSOBEL_ROWS=10 -DCANNY_REUSE_HALO -c $< -o $@
+
+build/canny_halo.x: src/drivers/driver_tiled.cpp src/pipeline/canny_tiled.cpp src/pipeline/canny_tiled.hpp src/kernels/gaussian/gaussian_kernel.cpp src/kernels/gaussian/gaussian_kernel.hpp src/reference/hysteresis.hpp build/kernel_sobel10.o build/kernel_sobel_halo.o build/kernel_nms.o build/canny_hysteresis.o
+	$(CXX) $(GAUSSIAN_FLAGS) -DSOBEL_ROWS=10 -DCANNY_REUSE_HALO -fopenmp $(filter %.cpp %.o,$^) -o $@
+
+MPICXX ?= /usr/lib64/openmpi/bin/mpicxx
+build/canny_mpi.x: src/drivers/driver_mpi.cpp src/pipeline/canny_tiled.cpp src/pipeline/canny_tiled.hpp src/kernels/gaussian/gaussian_kernel.cpp src/kernels/gaussian/gaussian_kernel.hpp build/kernel_sobel10.o build/kernel_nms.o build/canny_hysteresis.o
+	$(MPICXX) $(GAUSSIAN_FLAGS) -DOMPI_SKIP_MPICXX -DSOBEL_ROWS=10 -fopenmp $(filter %.cpp %.o,$^) -o $@
+
+build/kernel_sobel_fast.o: src/kernels/sobel/kernel_sobel.cpp src/kernels/sobel/kernel_sobel.hpp Makefile | build
+	$(CXX) $(SOBEL_FLAGS) -DSOBEL_ROWS=10 -DCANNY_SINGLE_GROUP -c $< -o $@
+
+build/canny_fast.x: src/drivers/driver_tiled.cpp src/pipeline/canny_tiled.cpp src/pipeline/canny_tiled.hpp src/kernels/gaussian/gaussian_kernel.cpp src/kernels/gaussian/gaussian_kernel.hpp build/kernel_sobel_fast.o build/kernel_nms.o build/canny_hysteresis.o
+	$(CXX) $(GAUSSIAN_FLAGS) -DSOBEL_ROWS=10 -fopenmp $(filter %.cpp %.o,$^) -o $@
+
+# Snapshot the selected pipeline's linked code, including the OpenMP worker.
+.PHONY: pipeline-asm
+pipeline-asm: build/canny_fast.x
+	python3 scripts/export_pipeline_asm.py

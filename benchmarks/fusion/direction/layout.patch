@@ -1,0 +1,81 @@
+--- a/src/kernel_sobel.cpp
++++ b/src/kernel_sobel.cpp
+@@ -28,7 +28,8 @@
+ void sobel_kernel(const uint16_t *input, int16_t *output, int width) {
+ #endif
+     using namespace sobel_l1;
+-    for (const uint16_t *end = input + width; input != end; input += 32, output += 32) {
++    auto *direction = reinterpret_cast<uint8_t*>(output + SOBEL_PLANE);
++    for (const uint16_t *end = input + width; input != end; input += 32, output += 32, direction += 32) {
+         __m256i d_mid[2], e_prev[2], s_top[2], s_mid[2];
+ 
+         // ==================== SETUP: INPUT ROWS 0 AND 1 ====================
+@@ -52,8 +53,15 @@
+                 __m256i gy = SUB(s, s_top[g]);   // Gy = S_bottom - S_top
+                 int16_t *o = output + r * SOBEL_OUT_STRIDE + 16 * g;
+                 STORE(o, ADD(ABS(gx), ABS(gy)));  // M = |Gx| + |Gy|
+-                STORE(o + SOBEL_PLANE, gx);
+-                STORE(o + 2 * SOBEL_PLANE, gy);
++                __m256i ax=ABS(gx), ay=ABS(gy);
++                __m256i t=_mm256_mulhi_epu16(ax,_mm256_set1_epi16(27146));
++                __m256i diag=_mm256_cmpgt_epi16(ay,t);
++                __m256i vert=_mm256_cmpgt_epi16(ay,ADD(t,ADD(ax,ax)));
++                __m256i sign=_mm256_srli_epi16(_mm256_xor_si256(gx,gy),15);
++                __m256i bin=_mm256_and_si256(diag,ADD(_mm256_set1_epi16(1),sign));
++                bin=_mm256_or_si256(bin,_mm256_and_si256(vert,_mm256_set1_epi16(3)));
++                __m128i bytes=_mm_packus_epi16(_mm256_castsi256_si128(bin),_mm256_extracti128_si256(bin,1));
++                _mm_storeu_si128((__m128i*)(direction+r*SOBEL_OUT_STRIDE+16*g),bytes);
+                 d_mid[g] = d;
+                 e_prev[g] = e;
+                 s_top[g] = s_mid[g];
+--- a/src/kernel_nms.cpp
++++ b/src/kernel_nms.cpp
+@@ -27,7 +27,7 @@
+                 std::ptrdiff_t gs, Out *out, std::ptrdiff_t os, int width, [[maybe_unused]] int low, [[maybe_unused]] int high) {
+     using namespace nms_l1;
+     const __m256i one = _mm256_set1_epi16(1);
+-    const __m256i tan22 = _mm256_set1_epi16(27146);   // tan(22.5 deg) * 65536
++    (void)gy;
+     for (int x = 0; x < width; x += 64) {
+ #pragma GCC unroll 4
+         for (int g = 0; g < 4; g++) {
+@@ -37,12 +37,11 @@
+                 const int16_t *up = top + r * ms + c0, *mid = up + ms, *down = mid + ms;
+ 
+                 // ==================== DIRECTION ====================
+-                __m256i dx = LOAD(gx + r * gs + c0), dy = LOAD(gy + r * gs + c0);
+-                __m256i ax = ABS(dx), ay = ABS(dy);
+-                __m256i t = MUL_HIGH(ax, tan22);                // |Gx| * tan 22.5
+-                __m256i not_h = GT(ay, t);                       // not horizontal
+-                __m256i vert = GT(ay, ADD(t, ADD(ax, ax)));      // vertical
+-                __m256i sign = _mm256_srai_epi16(XOR(dx, dy), 15);   // Gx, Gy opposite signs
++                const auto *dir=reinterpret_cast<const uint8_t*>(gx)+r*gs+c0;
++                __m256i bin=_mm256_cvtepu8_epi16(_mm_loadu_si128((const __m128i*)dir));
++                __m256i not_h=GT(bin,_mm256_setzero_si256());
++                __m256i vert=_mm256_cmpeq_epi16(bin,_mm256_set1_epi16(3));
++                __m256i sign=_mm256_cmpeq_epi16(bin,_mm256_set1_epi16(2));
+ 
+                 // ==================== ONE THRESHOLD PER DIRECTION ====================
+                 __m256i t_h = THRESHOLD(mid - 1, mid + 1, one);   // left, right
+--- a/src/canny_tiled.cpp
++++ b/src/canny_tiled.cpp
+@@ -17,7 +17,7 @@
+ struct Scratch {
+     std::unique_ptr<GaussianWork, decltype(&gaussian_work_destroy)> gaussian;
+     alignas(64) uint16_t input[(SOBEL_ROWS + 2) * SOBEL_IN_STRIDE]{};
+-    alignas(64) int16_t gradient[3 * SOBEL_PLANE]{};
++    alignas(64) int16_t gradient[SOBEL_PLANE + SOBEL_PLANE/2]{};
+     uint8_t blur[SOBEL_IN_STRIDE]{}, labels[2 * SOBEL_MAX_WIDTH]{};
+     explicit Scratch(int width): gaussian(gaussian_work_create(width + 64), gaussian_work_destroy) {}
+ };
+@@ -83,8 +83,8 @@
+             sobel_kernel(s.input, s.gradient, sw);
+         for (int j = 0; j < output_rows && r+j < height; j += 2) {
+             auto *top = s.gradient + 1 + j * SOBEL_OUT_STRIDE;
+-            auto *gx = top + SOBEL_OUT_STRIDE + SOBEL_PLANE;
+-            nms_labels(top, SOBEL_OUT_STRIDE, gx, gx + SOBEL_PLANE, SOBEL_OUT_STRIDE,
++            auto *directions = reinterpret_cast<uint8_t*>(s.gradient+SOBEL_PLANE) + (j+1)*SOBEL_OUT_STRIDE+1;
++            nms_labels(top, SOBEL_OUT_STRIDE, reinterpret_cast<const int16_t*>(directions), nullptr, SOBEL_OUT_STRIDE,
+                        s.labels, nw, nw, low, high);
+             for (int k = 0; k < 2 && r+j+k < height; ++k)
+                 std::memcpy(out + size_t(y+r+j+k)*w+x, s.labels + k*nw, width);

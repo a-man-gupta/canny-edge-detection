@@ -12,7 +12,7 @@ rdtsc × a fixed clock, and print the GHz of each run.
 Core facts used for the peaks: 2 FP ports (0 and 1), compare-into-mask on port 5 only, 2 load
 ports, 4 uops issued per cycle, `vsqrtps` 6 cycles per 8 floats.
 
-## Stage 2: Sobel (`src/sobel_kernel.cpp`, `make` / `make count`)
+## Stage 2: Sobel (`src/legacy/sobel_kernel.cpp`, `make` / `make count`)
 
 64 pixels per iteration, software pipelined (gradients of the next block while the current one
 finishes), 0 spills.
@@ -26,7 +26,7 @@ finishes), 0 spills.
 Measured, data in L1, width 1026, all 8 machines: **1.27–1.31 cycles/pixel**, 69% of the 0.875
 peak, about 79% of the issue bound. 18 FLOP/pixel, so ~14 FLOP/cycle.
 
-## Stage 3: NMS (`src/nms_kernel.cpp`, `make nms` / `make nms-count`)
+## Stage 3: NMS (`src/legacy/nms_kernel.cpp`, `make nms` / `make nms-count`)
 
 ### Design
 
