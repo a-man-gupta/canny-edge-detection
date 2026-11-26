@@ -7,3 +7,5 @@ Each output uses a 3×3 neighborhood. For each input row compute D = right − l
 **Standalone peak.** The earlier 6×32 benchmark counts 138 arithmetic instructions × 16 lanes and 46 port cycles across p0/p1/p5. Peak = **48.00 integer lane-ops/cycle**. Measured = **37.28** at width 384, or **77.7%**. The 10×16 integrated version has a different instruction stream. Its matched eight-core whole-pipeline experiment moved from 5.611 to 5.537 ms when changing the grouping with the original queue.
 
 [Source](kernel_sobel.cpp) · [Final assembly](../../../assembly/sobel.asm) · [Standalone results](../../../benchmarks/fusion/results/peak.log).
+
+**Final 10×16 L1 measurement.** Width 128, 11,520 cache-line bytes, 32.5 integer lane-ops/cycle against a 48.0 arithmetic-port ceiling (68%). [Group sweeps and port measurements](../../../docs/final/WALKTHROUGH.md).

@@ -2,6 +2,8 @@
 
 The optimized Canny pipeline reads an 8-bit grayscale image and returns an edge map. OpenMP workers run Gaussian blur, Sobel, non-maximum suppression (NMS) and double thresholding on local tiles. Hysteresis connects edges across the resulting labels.
 
+[Final 10-page report](docs/final/Canny-final.pdf) · [Plain-language walkthrough and reproduction commands](docs/final/WALKTHROUGH.md)
+
 ## Build and run
 
 On ECE024, from this directory, run the following commands with GCC, GNU Make, OpenMP and binutils installed.
@@ -10,6 +12,7 @@ On ECE024, from this directory, run the following commands with GCC, GNU Make, O
 make fusion FUSION_IMAGE=noise        # generated image, scalar check and timing
 make fusion                          # uses canny-fusion-inputs/photo-1920.raw
 make pipeline-asm                    # refresh assembly/ from the final executable
+make sobel nms                       # hot production loops, width 128, actual core cycles
 ```
 
 For your own image set FUSION_IMAGE, FUSION_WIDTH and FUSION_HEIGHT. Use headerless grayscale with one byte per pixel in row-major order. The driver reports filter, tracking and total milliseconds and prints **exact** when both labels and edges match the scalar reference.

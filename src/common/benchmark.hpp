@@ -18,11 +18,11 @@ constexpr double PERFORMANCE_CUTOFF = 0.75;
 struct CoreCounter {
     struct Sample { uint64_t cycles, enabled, running; };
     int fd;
-    CoreCounter() {
+    CoreCounter(uint32_t type = PERF_TYPE_HARDWARE, uint64_t config = PERF_COUNT_HW_CPU_CYCLES) {
         perf_event_attr event{};
         event.size = sizeof(event);
-        event.type = PERF_TYPE_HARDWARE;
-        event.config = PERF_COUNT_HW_CPU_CYCLES;
+        event.type = type;
+        event.config = config;
         event.exclude_kernel = 1;
         event.exclude_hv = 1;
         event.pinned = 1;

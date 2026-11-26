@@ -11,8 +11,8 @@
 #define SOBEL_ROWS 6
 #endif
 constexpr int SOBEL_MAX_WIDTH = 384;
-constexpr int SOBEL_IN_STRIDE = 448;   // uint16 elements per input row
-constexpr int SOBEL_OUT_STRIDE = 416;  // int16 elements per output row
+constexpr int SOBEL_IN_STRIDE = 480;   // uint16 elements per input row
+constexpr int SOBEL_OUT_STRIDE = 480;  // int16 elements per output row
 constexpr int SOBEL_PLANE = SOBEL_ROWS * SOBEL_OUT_STRIDE;
 
 void sobel_kernel(const uint16_t *input, int16_t *output, int width);

@@ -14,3 +14,7 @@ void nms_kernel(const int16_t *top, std::ptrdiff_t mag_stride, const int16_t *gx
 // Same two-row layout, emits 0/1/2 directly for strict L1 magnitude thresholds.
 void nms_labels(const int16_t *top, std::ptrdiff_t ms, const int16_t *gx, const int16_t *gy,
                 std::ptrdiff_t gs, uint8_t *out, std::ptrdiff_t os, int width, int low, int high);
+
+// Ten output rows sharing twelve consecutive magnitude rows.
+void nms_labels_ten_rows(const int16_t *top, std::ptrdiff_t ms, const int16_t *gx, const int16_t *gy,
+                std::ptrdiff_t gs, uint8_t *out, std::ptrdiff_t os, int width, int low, int high);

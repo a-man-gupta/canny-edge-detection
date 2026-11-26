@@ -25,6 +25,8 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 endif()
 
 add_executable(sobel_driver src/drivers/driver_sobel.cpp $<TARGET_OBJECTS:sobel_kernel>)
+target_compile_definitions(sobel_kernel PRIVATE SOBEL_ROWS=10)
+target_compile_definitions(sobel_driver PRIVATE SOBEL_ROWS=10)
 add_executable(nms_driver src/drivers/driver_nms.cpp $<TARGET_OBJECTS:nms_kernel>)
 foreach(target sobel_kernel nms_kernel sobel_driver nms_driver)
   target_include_directories(${target} PRIVATE src)

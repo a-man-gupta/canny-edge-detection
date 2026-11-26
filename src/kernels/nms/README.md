@@ -7,3 +7,5 @@ NMS thins the magnitude ridge along the gradient direction. For each center, com
 **Standalone NMS benchmark.** 176 counted vector operations × 16 lanes / (200 port micro-ops / 3 ports) = **42.24 integer lane-ops/cycle**. Measured **34.74**, or **82.2%**. The fused label loop adds compares and byte packing. Its time is included in the integrated filter phase.
 
 [Source](kernel_nms.cpp) · [Fused assembly](../../../assembly/nms-threshold.asm) · [Standalone results](../../../benchmarks/fusion/results/peak.log).
+
+**Final fused L1 measurement.** Width 128, 2,624 cache-line bytes, 30.43 integer lane-ops/cycle against a 40.26 arithmetic-port ceiling (75.6%). [Group sweeps and port measurements](../../../docs/final/WALKTHROUGH.md).

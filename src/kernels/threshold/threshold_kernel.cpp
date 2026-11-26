@@ -39,9 +39,17 @@ extern "C" __attribute__((noinline)) void threshold_i16_repeat(const int32_t *ma
   for (long pass = 0; pass < reps; ++pass) {
     const int32_t *in = mag_sq;
     uint8_t *out = labels;
-    for (const int32_t *end = mag_sq + n; in != end; in += 64, out += 64) {
-      _mm256_storeu_si256((__m256i *)out, block32(in, low, high, order));
-      _mm256_storeu_si256((__m256i *)(out + 32), block32(in + 32, low, high, order));
+    const int32_t* end = mag_sq + n;
+    // Each call classifies 32 independent pixels. A short final block has 64.
+    for (; end - in >= 128; in += 128, out += 128) {
+      _mm256_storeu_si256((__m256i*)out, block32(in, low, high, order));
+      _mm256_storeu_si256((__m256i*)(out + 32), block32(in + 32, low, high, order));
+      _mm256_storeu_si256((__m256i*)(out + 64), block32(in + 64, low, high, order));
+      _mm256_storeu_si256((__m256i*)(out + 96), block32(in + 96, low, high, order));
+    }
+    if (in != end) {
+      _mm256_storeu_si256((__m256i*)out, block32(in, low, high, order));
+      _mm256_storeu_si256((__m256i*)(out + 32), block32(in + 32, low, high, order));
     }
     // Compiler barrier only: every pass executes; no fence instruction.
     std::atomic_signal_fence(std::memory_order_seq_cst);

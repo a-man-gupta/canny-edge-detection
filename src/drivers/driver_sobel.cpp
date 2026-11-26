@@ -1,21 +1,11 @@
-// Sobel (L1 magnitude): exact check against a scalar reference, then measured
-// executed int16 ops/cycle against the functional-unit peak.
-#include "../common/benchmark.hpp"
+// Benchmark the production gradient and L1-magnitude object against scalar Sobel.
+#include "l1_rows.hpp"
 #include "../kernels/sobel/kernel_sobel.hpp"
 #include <random>
 
-// Ports 0/1/5 micro-ops per loop iteration (SOBEL_ROWS rows x 32 columns = 2 groups):
-//   each input row-group:  D = R - L, T = R + C, T + T, S = 2T - D   -> 4 add/sub
-//   each output row-group: E, Gx, Gy, M = |Gx| + |Gy|                -> 4 add/sub + 2 abs
-//   setup: E = D_top + D_mid per group                              -> 1 add
-constexpr int INPUT_ROW_GROUPS = (SOBEL_ROWS + 2) * 2;
-constexpr int OUTPUT_ROW_GROUPS = SOBEL_ROWS * 2;
-constexpr int ADD_SUB = 4 * INPUT_ROW_GROUPS + 4 * OUTPUT_ROW_GROUPS + 2;   // ports 0, 1, 5
-constexpr int ABS = 2 * OUTPUT_ROW_GROUPS;                                   // ports 0, 1
-constexpr double PORT_CYCLES = double(ADD_SUB + ABS) / 3;          // busiest port group
-constexpr int OPS_PER_LOOP = (ADD_SUB + ABS) * 16;                  // executed int16 operations
-constexpr double OPS_PER_PIXEL = double(OPS_PER_LOOP) / (SOBEL_ROWS * 32);
-constexpr double PEAK = OPS_PER_LOOP / PORT_CYCLES;                 // 3 ports x 16 lanes = 48
+// Four row-preparation ops per source row, six gradient/magnitude ops per
+// output row and one initial adjacent difference sum, all on int16 lanes.
+constexpr int OPS_PER_GROUP = (4 * (SOBEL_ROWS + 2) + 6 * SOBEL_ROWS + 1) * 16;
 
 static int scalar_gx(const uint16_t *p) {   // p = top-left of the 3x3 neighbourhood
     const int s = SOBEL_IN_STRIDE;
@@ -34,10 +24,11 @@ int main(int argc, char **argv) {
         std::fprintf(stderr, "Sobel width must be a multiple of 32, at most %d\n", SOBEL_MAX_WIDTH);
         return 2;
     }
-    // Input page-aligned; output starts 3072 bytes into its page (avoids 4K aliasing with the input).
-    uint16_t *input = (uint16_t *)allocate_aligned(2 * (SOBEL_ROWS + 2) * SOBEL_IN_STRIDE + 4096);
-    char *output_block = (char *)allocate_aligned(2 * 3 * SOBEL_PLANE + 8192);
-    int16_t *output = (int16_t *)(output_block + (4096 - uintptr_t(output_block) % 4096) % 4096 + 3072);
+    // Match the pipeline scratch layout: the three output planes follow the input rows.
+    constexpr size_t input_words = (SOBEL_ROWS + 2) * SOBEL_IN_STRIDE;
+    auto *input = static_cast<uint16_t*>(allocate_aligned(
+        (input_words + 3 * SOBEL_PLANE) * sizeof(uint16_t)));
+    auto *output = reinterpret_cast<int16_t*>(input + input_words);
 
     // ==================== CORRECTNESS ====================
     std::mt19937 rng(645);
@@ -61,23 +52,14 @@ int main(int argc, char **argv) {
     if (std::getenv("CHECK_ONLY")) return 0;
 
     // ==================== TIMING ====================
-    CoreCounter counter;
-    std::vector<double> rates;
-    for (int t = 0; t < trials; t++) {
-        for (uint64_t i = 0; i < runs / 10 + 1; i++) sobel_kernel(input, output, width);
-        const auto start = counter.read();
-        for (uint64_t i = 0; i < runs; i++) sobel_kernel(input, output, width);
-        const auto end = counter.read();
-        if (end.enabled - start.enabled != end.running - start.running) {
-            std::fputs("Counter was multiplexed\n", stderr); return 2;
-        }
-        rates.push_back(OPS_PER_PIXEL * SOBEL_ROWS * width * runs / double(end.cycles - start.cycles));
-    }
-    const double measured = median(rates);
-    std::printf("Sobel L1, tile %d rows x 32 columns, width %d\n", SOBEL_ROWS, width);
-    std::printf("  ports 0,1,5: (%d add/sub + %d abs) / 3 = %.2f cycles per loop\n", ADD_SUB, ABS, PORT_CYCLES);
-    std::printf("  peak     = %d instructions x 16 lanes / %.2f = %.2f ops/cycle\n", ADD_SUB + ABS, PORT_CYCLES, PEAK);
-    std::printf("  measured = %.2f ops/cycle (median of %d), %.1f%% of peak, %.3f cycles/pixel\n",
-                measured, trials, 100 * measured / PEAK, OPS_PER_PIXEL / measured);
-    return 0;
+    HotLines hot;
+    for (int r = 0; r < SOBEL_ROWS + 2; ++r)
+        hot.row(input + r * SOBEL_IN_STRIDE, 2 * (width + 2));
+    for (int p = 0; p < 3; ++p)
+        for (int r = 0; r < SOBEL_ROWS; ++r)
+            hot.row(output + p * SOBEL_PLANE + r * SOBEL_OUT_STRIDE, 2 * width);
+    std::printf("Sobel %d rows, width %d. Functional-unit model: %d lane-ops per 16 columns / %.3f p015 cycles = 48.00 lane-ops/cycle.\n",
+                SOBEL_ROWS, width, OPS_PER_GROUP, OPS_PER_GROUP / 48.0);
+    measure_rows([&] { sobel_kernel(input, output, width); }, hot,
+                 SOBEL_ROWS * width, OPS_PER_GROUP * (width / 16), runs, trials);
 }

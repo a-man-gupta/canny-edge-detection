@@ -9,7 +9,7 @@
 void threshold_kernel(size_t n, const int32_t *mag_sq, uint8_t *labels, int64_t low_sq,
                       int64_t high_sq);
 
-// Hot loop (256-bit AVX2): 64 pixels per iteration. The int32 inputs are packed to int16 with
+// Hot loop (256-bit AVX2): 128 pixels per iteration with a 64-pixel tail. The int32 inputs are packed to int16 with
 // signed saturation before the compares, which keeps every comparison exact as long as
 // 0 <= low_sq < high_sq <= 32766 and the inputs are nonnegative (threshold_kernel checks the
 // thresholds and uses the int32 path otherwise). n is a multiple of 64; repetition is inside

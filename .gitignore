@@ -15,3 +15,6 @@ hardware_report.txt
 # Reproducible inputs and full-resolution edge maps for the fusion experiment.
 /canny-fusion-inputs/
 /benchmarks/fusion/results/*.raw
+
+# macOS AppleDouble metadata
+._*

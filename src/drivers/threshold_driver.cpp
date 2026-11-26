@@ -133,7 +133,7 @@ int main(int argc, char **argv) try {
     whole(3840, 2160, 21);
     return 0;
   }
-  printf("Double threshold: AVX2 (256-bit), int32 squared magnitude in, uint8 label out, 64 pixels per loop.\n");
+  printf("Double threshold: AVX2 (256-bit), int32 squared magnitude in, uint8 label out, 128 pixels per loop with a 64-pixel tail.\n");
   printf("One row in L1; median of samples; setup/warmup excluded.\n");
   printf("Core cycles from perf; nominal GHz uses core/reference cycles x 2.1.\n");
   printf("Pin to a quiet core and check its SMT sibling. Run make threshold-count for the compiled-code bound.\n");

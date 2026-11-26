@@ -1,203 +1,84 @@
-// Part 5 hysteresis kernel.
-//
-// Vector pass, per 32 pixels of a row: h = L[x-1] | L[x] | L[x+1] for the rows above, at and
-// below, then OR = h(y-1) | h(y) | h(y+1), the OR of the 3x3 neighborhood. Labels are 0, 1 or 2,
-// so (2 * center) & OR is nonzero exactly where the center is weak (2 * 1 = 2) and a neighbor is
-// strong (bit 1 of OR); a strong center gives 4 & OR = 0. edges = (center == 2) ? 255 : 0.
-// Working down a block of 4 rows, each row's h is used by three output rows, so 6 rows are
-// loaded (3 vectors each) for 4 rows of output. The seed test is accumulated over the block and
-// branched on once; blocks with a seed are listed and finished in scalar code.
-//
-// The x-1 and x+1 loads are unaligned; with x on a 32-byte boundary one of the two crosses a
-// 64-byte line, so each loaded row costs one split load.
+// Hysteresis on a slab: grow strong edges through eight-connected weak labels.
 #include "hysteresis_kernel.hpp"
-
 #include <algorithm>
 #include <atomic>
 #include <immintrin.h>
 
-#define INLINE static inline __attribute__((always_inline))
+template<bool exact_masks, bool zero_side_borders>
+static void track(int, int, const uint8_t*, uint8_t*, std::vector<size_t>&);
+__attribute__((target("avx512bw,avx512vl"))) static bool
+track256(int, const uint8_t*, uint8_t*, std::vector<size_t>&);
+__attribute__((target("avx512bw,avx512vl"))) static bool
+hysteresis_words(int, int, const uint8_t*, uint8_t*, std::vector<size_t>&);
 
-INLINE __m256i load(const uint8_t *p) { return _mm256_loadu_si256((const __m256i *)p); }
-// a | b | c in one vpternlogd.
-INLINE __m256i or3(__m256i a, __m256i b, __m256i c) {
-  return _mm256_ternarylogic_epi32(a, b, c, 0xFE);
-}
-// a | (b & c) in one vpternlogd.
-INLINE __m256i or_and(__m256i a, __m256i b, __m256i c) { // Port 3
-  return _mm256_ternarylogic_epi32(a, b, c, 0xF8);
-}
-
-template <int R>
-INLINE long rows_repeat(const uint8_t *labels, uint8_t *edges, long stride, long begin, long n,
-                        uint32_t *hits, long reps) {
-  const __m256i two = _mm256_set1_epi8(2);
-  long count = 0;
-  for (long pass = 0; pass < reps; ++pass) {
-    count = 0;
-    for (long x = begin; x < begin + n; x += 32) {
-      const uint8_t *p = labels + x;
-      __m256i center[R + 2], h[R + 2];
-      for (int r = 0; r < R + 2; ++r) {
-        const uint8_t *row = p + (r - 1) * stride;
-        center[r] = load(row);
-        h[r] = or3(load(row - 1), center[r], load(row + 1));
-      }
-      __m256i seeds;
-      for (int r = 1; r <= R; ++r) {
-        __m256i all = or3(h[r - 1], h[r], h[r + 1]);
-        _mm256_storeu_si256((__m256i *)(edges + (r - 1) * stride + x),
-                            _mm256_cmpeq_epi8(center[r], two));
-        __m256i doubled = _mm256_add_epi8(center[r], center[r]);
-        seeds = r == 1 ? _mm256_and_si256(doubled, all) : or_and(seeds, doubled, all);
-      }
-      if (__builtin_expect(!_mm256_testz_si256(seeds, seeds), 0))
-        hits[count++] = uint32_t(x);
-    }
-    // Compiler barrier only: every pass executes; no fence instruction.
-    std::atomic_signal_fence(std::memory_order_seq_cst);
-  }
-  return count;
-}
-
-extern "C" __attribute__((noinline)) long
-hysteresis_rows4_repeat(const uint8_t *labels, uint8_t *edges, long stride, long begin, long n,
-                        uint32_t *hits, long reps) {
-  return rows_repeat<4>(labels, edges, stride, begin, n, hits, reps);
-}
-
-extern "C" __attribute__((noinline)) long
-hysteresis_rows1_repeat(const uint8_t *labels, uint8_t *edges, long stride, long begin, long n,
-                        uint32_t *hits, long reps) {
-  return rows_repeat<1>(labels, edges, stride, begin, n, hits, reps);
-}
-
-// Emit exact seed lanes while their neighborhood is still in vector registers.
-static void seed_mask_row(const uint8_t *p, uint8_t *edge, int stride, int width,
-                          size_t base, std::vector<size_t> &queue) {
-  const __m256i one = _mm256_set1_epi8(1), two = _mm256_set1_epi8(2);
-  for (int x = 1; x <= width; x += 32) {
-    const uint8_t *c = p + x;
-    auto horizontal = [](const uint8_t *r) { return or3(load(r-1),load(r),load(r+1)); };
-    __m256i center = load(c);
-    __m256i neighbors = or3(horizontal(c-stride),horizontal(c),horizontal(c+stride));
-    __m256i weak = _mm256_cmpeq_epi8(center,one);
-    __m256i strong_neighbor = _mm256_cmpeq_epi8(_mm256_and_si256(neighbors,two),two);
-    __m256i seed = _mm256_and_si256(weak,strong_neighbor);
-    _mm256_storeu_si256((__m256i*)(edge+x),_mm256_or_si256(seed,_mm256_cmpeq_epi8(center,two)));
-    unsigned mask = unsigned(_mm256_movemask_epi8(seed));
-    while (mask) {
-      queue.push_back(base+x+__builtin_ctz(mask));
-      mask &= mask-1;
-    }
-  }
-}
-
-template<bool exact_masks, bool zero_side_borders=false>
-static void track(int w, int h, const uint8_t *labels, uint8_t *edges,
-                       std::vector<size_t> &queue) {
-  queue.clear();
-  if (w <= 0 || h <= 0)
+void hysteresis_slab(int w, int h, const uint8_t *labels, uint8_t *edges,
+                     std::vector<size_t> &queue) {
+  if (w > 0 && w % 64 == 0 && h > 0 && __builtin_cpu_supports("avx512bw") &&
+      (w == 256 ? track256(h, labels, edges, queue)
+                : hysteresis_words(w, h, labels, edges, queue)))
     return;
-  // A weak pixel with a strong neighbor starts the queue, already marked as an edge.
-  auto seed = [&](int y, int x) {
-    for (int j = -1; j <= 1; ++j)
-      for (int k = -1; k <= 1; ++k) {
-        if (y + j < 0 || y + j >= h || x + k < 0 || x + k >= w)
-          continue;
-        if (labels[size_t(y + j) * w + x + k] == 2) {
-          edges[size_t(y) * w + x] = 255;
-          queue.push_back(size_t(y) * w + x);
-          return;
-        }
-      }
-  };
-  auto scalar_pixel = [&](int y, int x) {
-    const size_t i = size_t(y) * w + x;
-    edges[i] = labels[i] == 2 ? 255 : 0;
-    if (labels[i] == 1)
-      seed(y, x);
-  };
+  track<true, true>(w, h, labels, edges, queue);
+}
 
-  // Columns 1 .. vector_pixels go through the vector pass on rows 1 .. h-2.
-  const int vector_pixels = h >= 3 && w >= 34 ? (w - 2) / 32 * 32 : 0;
-  std::vector<uint32_t> hits(vector_pixels / 32 + 1);
-  auto rows = [&](int y, int count) {
-    const size_t row = size_t(y) * w;
-    long found = 0;
-    if constexpr (exact_masks) {
-      for (int r=0; r<count; ++r) {
-        size_t offset=row+size_t(r)*w;
-        seed_mask_row(labels+offset,edges+offset,w,vector_pixels,offset,queue);
-      }
-    } else if (vector_pixels)
-      found = count == 4 ? hysteresis_rows4_repeat(labels + row, edges + row, w, 1, vector_pixels,
-                                                   hits.data(), 1)
-                         : hysteresis_rows1_repeat(labels + row, edges + row, w, 1, vector_pixels,
-                                                   hits.data(), 1);
-    for (long f = 0; f < found; ++f)
-      for (int r = 0; r < count; ++r)
-        for (int x = int(hits[f]); x < int(hits[f]) + 32; ++x)
-          if (labels[size_t(y + r) * w + x] == 1)
-            seed(y + r, x);
-    for (int r = 0; r < count; ++r) {
-      scalar_pixel(y + r, 0);
-      for (int x = 1 + vector_pixels; x < w; ++x)
-        scalar_pixel(y + r, x);
+// Pack labels, propagate reachability, then write the edge bytes.
+__attribute__((target("avx512bw,avx512vl"))) static bool
+hysteresis_words(int w, int h, const uint8_t *labels, uint8_t *out,
+                 std::vector<size_t> &scratch) {
+  const int words = w / 64, pitch = words + 2;
+  const size_t plane = (size_t(h) + 2) * pitch;
+  // A one-word border makes all eight neighbor reads valid. Reuse the caller's
+  // allocation.
+  scratch.assign(plane * 2, 0);
+  uint64_t *reached = scratch.data() + pitch + 1;
+  uint64_t *weak = reached + plane;
+  const auto one = _mm512_set1_epi8(1), two = _mm512_set1_epi8(2);
+  for (int y = 0; y < h; ++y)
+    for (int x = 0; x < words; ++x) {
+      const auto *p = labels + size_t(y) * w + x * 64;
+      const auto values = _mm512_loadu_si512(p);
+      size_t i = size_t(y) * pitch + x;
+      weak[i] = _mm512_cmpeq_epi8_mask(values, one);
+      reached[i] = _mm512_cmpeq_epi8_mask(values, two);
     }
-  };
-
-  for (int x = 0; x < w; ++x)
-    scalar_pixel(0, x);
-  int y = 1;
-  for (; y + 4 <= h - 1; y += 4)
-    rows(y, 4);
-  for (; y < h - 1; ++y)
-    rows(y, 1);
-  if (h > 1)
-    for (int x = 0; x < w; ++x)
-      scalar_pixel(h - 1, x);
-
-  // Queue pass: grow from the seeds through weak pixels.
-  for (size_t head = 0; head < queue.size(); ++head) {
-    const size_t i = queue[head];
-    if constexpr (zero_side_borders) {
-      // NMS clears both outer columns. Queued pixels therefore have valid left/right neighbors.
-      auto visit = [&](size_t neighbor) {
-        if (labels[neighbor]==1 && edges[neighbor]==0) {
-          edges[neighbor]=255;
-          queue.push_back(neighbor);
-        }
-      };
-      auto visit_row = [&](size_t center) { visit(center-1); visit(center); visit(center+1); };
-      if (i>=size_t(w)) visit_row(i-w);
-      visit(i-1);
-      visit(i+1);
-      if (i<size_t(h-1)*w) visit_row(i+w);
-      continue;
-    }
-    const int y = int(i / w), x = int(i % w);
-    for (int j = -1; j <= 1; ++j)
-      for (int k = -1; k <= 1; ++k) {
-        if (y + j < 0 || y + j >= h || x + k < 0 || x + k >= w)
+  // The bounded sweeps leave long winding paths to the linear-time queue.
+  bool previous_changed = true;
+  for (int sweep = 0, dir = 1; sweep < 16; ++sweep, dir = -dir) {
+    bool changed = false;
+    for (int row = 0; row < h; ++row) {
+      int y = dir == 1 ? row : h - 1 - row;
+      uint64_t *r = reached + size_t(y) * pitch;
+      const auto *adjacent = r - dir * pitch;
+      for (int col = 0; col < words; ++col) {
+        int x = dir == 1 ? col : words - 1 - col;
+        uint64_t seeds = r[x] | adjacent[x];
+        uint64_t neighbors = seeds | (seeds << 1) | (seeds >> 1) |
+                             ((r[x - 1] | adjacent[x - 1]) >> 63) |
+                             ((r[x + 1] | adjacent[x + 1]) << 63);
+        const uint64_t allowed = weak[size_t(y) * pitch + x];
+        uint64_t fresh = neighbors & allowed & ~r[x];
+        if (!fresh)
           continue;
-        const size_t nb = size_t(y + j) * w + x + k;
-        if (labels[nb] == 1 && !edges[nb]) {
-          edges[nb] = 255;
-          queue.push_back(nb);
-        }
+        changed = true;
+        do {
+          r[x] |= fresh;
+          fresh = ((fresh << 1) | (fresh >> 1)) & allowed & ~r[x];
+        } while (fresh);
       }
+    }
+    if (!changed && !previous_changed)
+      break;
+    previous_changed = changed;
+    if (sweep == 15)
+      return false;
   }
+  for (int y = 0; y < h; ++y)
+    for (int x = 0; x < words; ++x) {
+      uint64_t bits = reached[size_t(y) * pitch + x];
+      auto *p = out + size_t(y) * w + x * 64;
+      _mm512_storeu_si512(p, _mm512_maskz_set1_epi8(bits, -1));
+    }
+  scratch.clear();
+  return true;
 }
 
-void hysteresis_kernel(int w,int h,const uint8_t *labels,uint8_t *edges,std::vector<size_t> &queue) {
-  track<false>(w,h,labels,edges,queue);
-}
-
-void hysteresis_mask_kernel(int w,int h,const uint8_t *labels,uint8_t *edges,std::vector<size_t> &queue) {
-  track<true>(w,h,labels,edges,queue);
-}
-
-void hysteresis_slab(int w,int h,const uint8_t *labels,uint8_t *edges,std::vector<size_t> &queue) {
-  track<true,true>(w,h,labels,edges,queue);
-}
+#include "detail/hysteresis_support.inc"

@@ -44,6 +44,28 @@ int main() try {
         }
         ++images;
       }
+  // The slab path accepts zero side columns and arbitrary top and bottom labels.
+  for (int w : {63, 64, 192, 256, 257, 384}) {
+    for (int h : {1, 2, 8, 33, 80}) {
+      for (int pattern=0; pattern<7; ++pattern) {
+        std::vector<uint8_t> labels(size_t(w)*h), edges(labels.size()), want(labels.size());
+        if (pattern<6) fill(labels,rng,w,pattern);
+        else {
+          // Vertical serpentine forces alternating propagation directions.
+          for (int x=1;x<w-1;x+=2) {
+            for(int y=0;y<h;++y) labels[size_t(y)*w+x]=1;
+            if(x+2<w-1) labels[size_t((x%4==1)?h-1:0)*w+x+1]=1;
+          }
+          labels[1]=2;
+        }
+        for(int y=0;y<h;++y) labels[size_t(y)*w]=labels[size_t(y+1)*w-1]=0;
+        hysteresis(labels,w,h,want,queue_ref);
+        hysteresis_slab(w,h,labels.data(),edges.data(),queue);
+        if(edges!=want) throw std::runtime_error("slab connectivity mismatch");
+        ++images;
+      }
+    }
+  }
   // Direct hot-loop calls: edges and seed hits for 4-row and 1-row blocks.
   for (int rows : {1, 4})
     for (long begin : {1L, 2L, 31L})
