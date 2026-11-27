@@ -15,7 +15,7 @@
 //                                                Sobel (SOBEL_ROWS = 10): M, Gx, Gy planes
 //                                                                       │ 10 rows
 //                                                                       ▼
-//                                         NMS + threshold, 2 rows per call: uint8 labels
+//                                         NMS + threshold, one call per strip: uint8 labels
 //                                                                       │ 8 rows
 //                                                                       ▼
 //                                                         copied into the label image

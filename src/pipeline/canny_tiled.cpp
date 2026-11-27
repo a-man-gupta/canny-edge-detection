@@ -1,6 +1,7 @@
 #include "canny_tiled.hpp"
 #include "../kernels/sobel/kernel_sobel.hpp"
 #include "../kernels/nms/kernel_nms.hpp"
+#include "../kernels/nms/detail/nms_impl.hpp"
 #include "../kernels/hysteresis/hysteresis_kernel.hpp"
 #include <algorithm>
 #include <cstring>
@@ -25,7 +26,8 @@ struct Scratch {
     // Sobel the 12 rows starting at row 8p, so rows shared by two passes are never copied.
     alignas(64) uint16_t blur[BLUR_ROWS * SOBEL_IN_STRIDE]{};
     alignas(64) int16_t gradient[3 * SOBEL_PLANE]{};   // M, Gx, Gy for SOBEL_ROWS rows
-    uint8_t labels[2 * SOBEL_MAX_WIDTH]{};             // two NMS label rows before the copy out
+    // One label row per interior Sobel row. NMS and both thresholds fill this before the strip is reused.
+    alignas(64) uint8_t labels[PASS_ROWS * SOBEL_MAX_WIDTH]{};
     explicit Scratch(int width): gaussian(gaussian_work_create(width + 64), gaussian_work_destroy) {}
 };
 
@@ -100,21 +102,20 @@ void tile(const uint8_t *image, uint8_t *out, int w, int h, int x, int y,
         std::fill(dst, dst + begin, dst[begin]);
         std::fill(dst + end, dst + input_cols, dst[end - 1]);
     };
-
     // ==================== PASSES: 12 BLURRED -> 10 GRADIENT -> 8 LABEL ROWS ====================
     for (int j = 0; j < 4; ++j) blurred_row(j);                 // rows shared with the first pass
     for (int r = 0; r < height; r += PASS_ROWS) {
         for (int j = r + 4; j < r + SOBEL_ROWS + 2; ++j) blurred_row(j);   // 8 new rows
         sobel_kernel(s.blur + r * SOBEL_IN_STRIDE, s.gradient, sobel_cols);
-        for (int k = 0; k < PASS_ROWS && r + k < height; k += 2) {
-            // Gradient row 0 is the halo above label row r; label column 0 is Sobel column 1.
-            const int16_t *top = s.gradient + 1 + k * SOBEL_OUT_STRIDE;
-            const int16_t *gx = top + SOBEL_OUT_STRIDE + SOBEL_PLANE;
-            nms_labels(top, SOBEL_OUT_STRIDE, gx, gx + SOBEL_PLANE, SOBEL_OUT_STRIDE,
-                       s.labels, nms_cols, nms_cols, low, high);
-            for (int i = 0; i < 2 && r + k + i < height; ++i)
-                std::memcpy(out + size_t(y + r + k + i) * w + x, s.labels + i * nms_cols, width);
-        }
+        // Gradient row 0 is the halo above the first label; label column 0 is Sobel column 1.
+        // Classify every interior row in one pass: NMS and both thresholds write 0/1/2.
+        const int16_t *top = s.gradient + 1;
+        const int16_t *gx = top + SOBEL_OUT_STRIDE + SOBEL_PLANE;
+        nms_labels_rows<PASS_ROWS>(top, SOBEL_OUT_STRIDE, gx, gx + SOBEL_PLANE, SOBEL_OUT_STRIDE,
+                                   s.labels, nms_cols, nms_cols, low, high);
+        const int n = std::min(PASS_ROWS, height - r);
+        for (int k = 0; k < n; ++k)
+            std::memcpy(out + size_t(y + r + k) * w + x, s.labels + size_t(k) * nms_cols, width);
     }
 }
 }  // namespace

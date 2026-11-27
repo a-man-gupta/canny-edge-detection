@@ -62,7 +62,7 @@ build:
 build/kernel_sobel.o: src/kernels/sobel/kernel_sobel.cpp src/kernels/sobel/kernel_sobel.hpp Makefile | build
 	$(CXX) $(SOBEL_FLAGS) -c $< -o $@
 
-build/kernel_nms.o: src/kernels/nms/kernel_nms.cpp src/kernels/nms/kernel_nms.hpp Makefile | build
+build/kernel_nms.o: src/kernels/nms/kernel_nms.cpp src/kernels/nms/kernel_nms.hpp src/kernels/nms/detail/nms_impl.hpp Makefile | build
 	$(CXX) $(KERNEL_FLAGS) -c $< -o $@
 
 build/sobel.x: src/drivers/driver_sobel.cpp src/common/benchmark.hpp src/kernels/sobel/kernel_sobel.hpp src/drivers/l1_rows.hpp build/kernel_sobel_fast.o
@@ -146,7 +146,7 @@ clean:
 build/canny_hysteresis.o: src/kernels/hysteresis/hysteresis_kernel.cpp src/kernels/hysteresis/hysteresis_kernel.hpp src/kernels/hysteresis/detail/hysteresis_support.inc | build
 	$(CXX) $(HYSTERESIS_FLAGS) -c $< -o $@
 
-build/canny_tiled.x: src/drivers/driver_tiled.cpp src/pipeline/canny_tiled.cpp src/pipeline/canny_tiled.hpp src/kernels/gaussian/gaussian_kernel.cpp src/kernels/gaussian/gaussian_kernel.hpp src/kernels/gaussian/detail/gaussian_support.inc src/kernels/gaussian/detail/gaussian_native_image.hpp src/kernels/gaussian/detail/gaussian_native.hpp src/reference/hysteresis.hpp build/kernel_sobel.o build/kernel_nms.o build/canny_hysteresis.o
+build/canny_tiled.x: src/drivers/driver_tiled.cpp src/pipeline/canny_tiled.cpp src/pipeline/canny_tiled.hpp src/kernels/nms/detail/nms_impl.hpp src/kernels/gaussian/gaussian_kernel.cpp src/kernels/gaussian/gaussian_kernel.hpp src/kernels/gaussian/detail/gaussian_support.inc src/kernels/gaussian/detail/gaussian_native_image.hpp src/kernels/gaussian/detail/gaussian_native.hpp src/reference/hysteresis.hpp build/kernel_sobel.o build/kernel_nms.o build/canny_hysteresis.o
 	$(CXX) $(GAUSSIAN_FLAGS) -fopenmp $(filter %.cpp %.o,$^) -o $@
 
 .PHONY: check-tiled
@@ -159,7 +159,7 @@ check-tiled: build/canny_tiled.x
 build/kernel_sobel10.o: src/kernels/sobel/kernel_sobel.cpp src/kernels/sobel/kernel_sobel.hpp Makefile | build
 	$(CXX) $(SOBEL_FLAGS) -DSOBEL_ROWS=10 -c $< -o $@
 
-build/canny_tall.x: src/drivers/driver_tiled.cpp src/pipeline/canny_tiled.cpp src/pipeline/canny_tiled.hpp src/kernels/gaussian/gaussian_kernel.cpp src/kernels/gaussian/gaussian_kernel.hpp src/kernels/gaussian/detail/gaussian_support.inc src/kernels/gaussian/detail/gaussian_native_image.hpp src/kernels/gaussian/detail/gaussian_native.hpp src/reference/hysteresis.hpp build/kernel_sobel10.o build/kernel_nms.o build/canny_hysteresis.o
+build/canny_tall.x: src/drivers/driver_tiled.cpp src/pipeline/canny_tiled.cpp src/pipeline/canny_tiled.hpp src/kernels/nms/detail/nms_impl.hpp src/kernels/gaussian/gaussian_kernel.cpp src/kernels/gaussian/gaussian_kernel.hpp src/kernels/gaussian/detail/gaussian_support.inc src/kernels/gaussian/detail/gaussian_native_image.hpp src/kernels/gaussian/detail/gaussian_native.hpp src/reference/hysteresis.hpp build/kernel_sobel10.o build/kernel_nms.o build/canny_hysteresis.o
 	$(CXX) $(GAUSSIAN_FLAGS) -DSOBEL_ROWS=10 -fopenmp $(filter %.cpp %.o,$^) -o $@
 
 # Reproduce the selected full-pipeline configuration on ECE024.
@@ -173,13 +173,13 @@ fusion: build/canny_fast.x
 	OMP_PLACES=cores OMP_PROC_BIND=close CANNY_MASK_SEEDS=1 taskset -c $(FUSION_CORES) $< $(FUSION_WIDTH) $(FUSION_HEIGHT) $(FUSION_THREADS) 320 7 $(FUSION_IMAGE) row
 
 MPICXX ?= /usr/lib64/openmpi/bin/mpicxx
-build/canny_mpi.x: src/drivers/driver_mpi.cpp src/pipeline/canny_tiled.cpp src/pipeline/canny_tiled.hpp src/kernels/gaussian/gaussian_kernel.cpp src/kernels/gaussian/gaussian_kernel.hpp src/kernels/gaussian/detail/gaussian_support.inc src/kernels/gaussian/detail/gaussian_native_image.hpp src/kernels/gaussian/detail/gaussian_native.hpp build/kernel_sobel10.o build/kernel_nms.o build/canny_hysteresis.o
+build/canny_mpi.x: src/drivers/driver_mpi.cpp src/pipeline/canny_tiled.cpp src/pipeline/canny_tiled.hpp src/kernels/nms/detail/nms_impl.hpp src/kernels/gaussian/gaussian_kernel.cpp src/kernels/gaussian/gaussian_kernel.hpp src/kernels/gaussian/detail/gaussian_support.inc src/kernels/gaussian/detail/gaussian_native_image.hpp src/kernels/gaussian/detail/gaussian_native.hpp build/kernel_sobel10.o build/kernel_nms.o build/canny_hysteresis.o
 	$(MPICXX) $(GAUSSIAN_FLAGS) -DOMPI_SKIP_MPICXX -DSOBEL_ROWS=10 -fopenmp $(filter %.cpp %.o,$^) -o $@
 
 build/kernel_sobel_fast.o: src/kernels/sobel/kernel_sobel.cpp src/kernels/sobel/kernel_sobel.hpp Makefile | build
 	$(CXX) $(SOBEL_FLAGS) -DSOBEL_ROWS=10 -c $< -o $@
 
-build/canny_fast.x: src/drivers/driver_tiled.cpp src/pipeline/canny_tiled.cpp src/pipeline/canny_tiled.hpp src/kernels/gaussian/gaussian_kernel.cpp src/kernels/gaussian/gaussian_kernel.hpp src/kernels/gaussian/detail/gaussian_support.inc src/kernels/gaussian/detail/gaussian_native_image.hpp src/kernels/gaussian/detail/gaussian_native.hpp build/kernel_sobel_fast.o build/kernel_nms.o build/canny_hysteresis.o
+build/canny_fast.x: src/drivers/driver_tiled.cpp src/pipeline/canny_tiled.cpp src/pipeline/canny_tiled.hpp src/kernels/nms/detail/nms_impl.hpp src/kernels/gaussian/gaussian_kernel.cpp src/kernels/gaussian/gaussian_kernel.hpp src/kernels/gaussian/detail/gaussian_support.inc src/kernels/gaussian/detail/gaussian_native_image.hpp src/kernels/gaussian/detail/gaussian_native.hpp build/kernel_sobel_fast.o build/kernel_nms.o build/canny_hysteresis.o
 	$(CXX) $(GAUSSIAN_FLAGS) -DSOBEL_ROWS=10 -fopenmp $(filter %.cpp %.o,$^) -o $@
 
 # Snapshot the selected pipeline's linked code, including the OpenMP worker.

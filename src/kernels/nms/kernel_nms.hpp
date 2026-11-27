@@ -13,11 +13,12 @@
 //           top - 1 to top + rows + 1, so every magnitude row needs one valid value on each side.
 //           gx, gy: the first output row, column 0. Strides are in elements.
 //   Width   a positive multiple of 64.
-//   Loop    one iteration = 2 rows x 64 columns (four groups of 16 lanes).
+//   Loop    one x step = 64 columns (four groups of 16 lanes). The row count is a template:
+//           2 and 10 for the drivers, every interior row of a Sobel strip in the pipeline.
 //
 // nms_kernel   writes int16: M where the pixel is a local maximum, else 0.
 // nms_labels   fuses double thresholding and writes uint8 labels: 0 rejected, 1 weak, 2 strong.
-//              Used by the tiled pipeline, 8 label rows per Sobel slab (called 2 rows at a time).
+//              The tiled pipeline classifies all 8 label rows of a Sobel slab in one call.
 // =====================================================================================
 void nms_kernel(const int16_t *top, std::ptrdiff_t mag_stride, const int16_t *gx,
                 const int16_t *gy, std::ptrdiff_t grad_stride, int16_t *out,
