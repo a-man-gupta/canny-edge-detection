@@ -172,13 +172,6 @@ FUSION_CORES ?= 0,2,4,6,8,10,12,14
 fusion: build/canny_fast.x
 	OMP_PLACES=cores OMP_PROC_BIND=close CANNY_MASK_SEEDS=1 taskset -c $(FUSION_CORES) $< $(FUSION_WIDTH) $(FUSION_HEIGHT) $(FUSION_THREADS) 320 7 $(FUSION_IMAGE) row
 
-# A/B experiment: same eight NMS rows, retain the overlapping Sobel results.
-build/kernel_sobel_halo.o: src/kernels/sobel/kernel_sobel.cpp src/kernels/sobel/kernel_sobel.hpp Makefile | build
-	$(CXX) $(SOBEL_FLAGS) -DSOBEL_ROWS=10 -DCANNY_REUSE_HALO -c $< -o $@
-
-build/canny_halo.x: src/drivers/driver_tiled.cpp src/pipeline/canny_tiled.cpp src/pipeline/canny_tiled.hpp src/kernels/gaussian/gaussian_kernel.cpp src/kernels/gaussian/gaussian_kernel.hpp src/kernels/gaussian/detail/gaussian_support.inc src/kernels/gaussian/detail/gaussian_native_image.hpp src/kernels/gaussian/detail/gaussian_native.hpp src/reference/hysteresis.hpp build/kernel_sobel10.o build/kernel_sobel_halo.o build/kernel_nms.o build/canny_hysteresis.o
-	$(CXX) $(GAUSSIAN_FLAGS) -DSOBEL_ROWS=10 -DCANNY_REUSE_HALO -fopenmp $(filter %.cpp %.o,$^) -o $@
-
 MPICXX ?= /usr/lib64/openmpi/bin/mpicxx
 build/canny_mpi.x: src/drivers/driver_mpi.cpp src/pipeline/canny_tiled.cpp src/pipeline/canny_tiled.hpp src/kernels/gaussian/gaussian_kernel.cpp src/kernels/gaussian/gaussian_kernel.hpp src/kernels/gaussian/detail/gaussian_support.inc src/kernels/gaussian/detail/gaussian_native_image.hpp src/kernels/gaussian/detail/gaussian_native.hpp build/kernel_sobel10.o build/kernel_nms.o build/canny_hysteresis.o
 	$(MPICXX) $(GAUSSIAN_FLAGS) -DOMPI_SKIP_MPICXX -DSOBEL_ROWS=10 -fopenmp $(filter %.cpp %.o,$^) -o $@

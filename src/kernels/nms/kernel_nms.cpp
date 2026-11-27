@@ -1,7 +1,10 @@
 #include "kernel_nms.hpp"
 #include <immintrin.h>
 
+// Non-maximum suppression (sizes and layout in kernel_nms.hpp).
 // One loop iteration: 2 rows x 64 columns, as four independent groups of 16 int16 pixels.
+// Per 16 pixels: find the direction with masks, build one threshold per direction straight
+// from memory, pick one threshold with three blends, then compare once.
 namespace nms_l1 {
 static inline __m256i LOAD(const int16_t *p) { return _mm256_loadu_si256((const __m256i *)p); }
 static inline void STORE(int16_t *p, __m256i a) { _mm256_storeu_si256((__m256i *)p, a); }

@@ -123,6 +123,18 @@ void gaussian_vert_row(const int16_t* const r[5], uint8_t* out, int w, const Gau
   if (x < w) vert_tail(rr, out + x, (size_t)x, w - x, c0, c1, c2, round);   // 1..31 pixels left
 }
 
+// Vertical filter straight to uint16, 16 pixels per step. Same rounding and clamp as the uint8
+// version: vpmulhrsw(Y, 512) = (Y + 32) >> 6, and min/max reproduces vpackuswb's [0, 255] clamp.
+void gaussian_vert_row_u16(const int16_t* const r[5], uint16_t* out, int w, const GaussQ15& q) {
+  const __m256i c0 = _mm256_set1_epi16(q.c0), c1 = _mm256_set1_epi16(q.c1), c2 = _mm256_set1_epi16(q.c2);
+  const __m256i round = _mm256_set1_epi16(512), lo = _mm256_setzero_si256(), hi = _mm256_set1_epi16(255);
+  for (int x = 0; x < w; x += 16) {
+    __m256i y = _mm256_mulhrs_epi16(VERTICAL(r, x), round);
+    y = _mm256_min_epi16(_mm256_max_epi16(y, lo), hi);
+    _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + x), y);
+  }
+}
+
 #undef HORIZONTAL
 #undef VERTICAL
 

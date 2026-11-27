@@ -2,19 +2,30 @@
 #include <cstddef>
 #include <cstdint>
 
-// NMS on the int16 L1 magnitude M = |Gx| + |Gy| (at most 2040). Two output rows.
-// top points at column 0 of the magnitude row above the first output row; every magnitude
-// row has one valid value on each side. gx, gy and out point at column 0 of the first output row.
-// Strides are in elements. Width is a positive multiple of 64. Output buffer is disjoint.
-// Output is M where the pixel is a local maximum along its gradient direction, else 0.
+// =====================================================================================
+// Non-maximum suppression on Sobel's int16 planes (M = |Gx| + |Gy| <= 2040, Gx, Gy).
+//
+//   Direction  horizontal if |Gy| <= 0.414|Gx|, vertical if |Gy| > 2.414|Gx|, else diagonal
+//              (sign of Gx*Gy picks which). 0.414|Gx| is mulhi(|Gx|, 27146), with no branches.
+//   Keep test  c > first AND c >= second  <=>  c > max(first, second - 1)   (exact for integers)
+//
+//   Input   top: magnitude row ABOVE the first output row, column 0. Rows are read from
+//           top - 1 to top + rows + 1, so every magnitude row needs one valid value on each side.
+//           gx, gy: the first output row, column 0. Strides are in elements.
+//   Width   a positive multiple of 64.
+//   Loop    one iteration = 2 rows x 64 columns (four groups of 16 lanes).
+//
+// nms_kernel   writes int16: M where the pixel is a local maximum, else 0.
+// nms_labels   fuses double thresholding and writes uint8 labels: 0 rejected, 1 weak, 2 strong.
+//              Used by the tiled pipeline, 8 label rows per Sobel slab (called 2 rows at a time).
+// =====================================================================================
 void nms_kernel(const int16_t *top, std::ptrdiff_t mag_stride, const int16_t *gx,
                 const int16_t *gy, std::ptrdiff_t grad_stride, int16_t *out,
                 std::ptrdiff_t out_stride, int width);
 
-// Same two-row layout, emits 0/1/2 directly for strict L1 magnitude thresholds.
 void nms_labels(const int16_t *top, std::ptrdiff_t ms, const int16_t *gx, const int16_t *gy,
                 std::ptrdiff_t gs, uint8_t *out, std::ptrdiff_t os, int width, int low, int high);
 
-// Ten output rows sharing twelve consecutive magnitude rows.
+// Same as nms_labels, ten output rows (twelve magnitude rows). Used by the NMS driver.
 void nms_labels_ten_rows(const int16_t *top, std::ptrdiff_t ms, const int16_t *gx, const int16_t *gy,
                 std::ptrdiff_t gs, uint8_t *out, std::ptrdiff_t os, int width, int low, int high);

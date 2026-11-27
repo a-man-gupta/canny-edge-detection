@@ -3,6 +3,21 @@
 #include <cstddef>
 #include <cstdint>
 
+// =====================================================================================
+// 5x5 Gaussian blur, separable, AVX2 int16 fixed point. uint8 image in, blurred pixels out.
+//
+//   Row by row   expand    one uint8 image row -> Q6 int16 row with 2 reflected samples per side
+//                horiz     that row -> one horizontal-filter row, stored in a five-row ring
+//                vert      the five ring rows around y -> one blurred row
+//                          (gaussian_vert_row writes uint8, gaussian_vert_row_u16 writes uint16)
+//   Width        any w >= 5. Loops handle 64 pixels (four 16-lane groups) per iteration; the
+//                horizontal and uint16 vertical passes store whole 16-lane vectors past w.
+//   Workspace    gaussian_work_create(w): one expand row and the ring (8 row slots), per thread.
+//
+// The tiled pipeline calls expand + horiz once per image row it needs and vert once per blurred
+// row Sobel needs, so a 64-row tile reads 68 image rows and keeps only five filter rows live.
+// =====================================================================================
+//
 // Part 1 kernel (gaussian_kernel.cpp): 5x5 Gaussian blur, AVX2 integer, uint8 in and uint8 out.
 //
 // Numeric contract (NOT the float blur of canny_scalar.cpp; see gaussian_ref_q):
@@ -43,6 +58,10 @@ int16_t* gaussian_ring_row(GaussianWork* work, int slot);
 void gaussian_expand_row(const uint8_t* in, int16_t* scratch, int w);
 void gaussian_horiz_row(const int16_t* scratch, int16_t* hrow, int w, const GaussQ15& q);
 void gaussian_vert_row(const int16_t* const rows[5], uint8_t* out, int w, const GaussQ15& q);
+// Same values as gaussian_vert_row, written as uint16 in [0, 255]: Sobel's input type, so the
+// tiled pipeline needs no uint8 round trip. Stores ceil(w/16) whole vectors and reads the rows
+// that far, so out and rows need room for w rounded up to 16.
+void gaussian_vert_row_u16(const int16_t* const rows[5], uint16_t* out, int w, const GaussQ15& q);
 
 // Plain scalar reference of the contract above (exact, any size >= 5x5).
 void gaussian_ref_q(int w, int h, const uint8_t* in, uint8_t* out, const GaussQ15& q);

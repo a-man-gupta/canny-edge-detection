@@ -3,6 +3,16 @@
 #include <cstdint>
 #include <vector>
 
+// =====================================================================================
+// Hysteresis: labels (0 rejected, 1 weak, 2 strong) -> edges (0 or 255).
+//
+//   Input   uint8 labels, w x h, row stride w. The tiled pipeline gives each worker a horizontal
+//           slab of rows (hysteresis_slab), then joins paths that cross slab seams serially.
+//   Vector  4 rows x 32 columns per iteration (AVX2 + AVX-512VL vpternlogd on ymm): write 255
+//   pass    for strong pixels and find seeds, weak pixels with a strong 8-neighbour.
+//   Queue   grows from the seeds through 8-connected weak pixels. Data dependent: no fixed peak.
+// =====================================================================================
+
 // Hysteresis on double-threshold labels (0 rejected, 1 weak, 2 strong). Writes edges (0 or 255)
 // with the same result as hysteresis() in hysteresis.hpp: strong pixels, plus weak pixels joined
 // to a strong pixel through 8-connected weak pixels. queue is caller-owned scratch (reserve w*h
